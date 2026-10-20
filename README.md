@@ -1,4 +1,4 @@
-# Muster
+# ronw-planner
 
 A guild party planner for one or many guilds. Import your roster, auto-fill balanced 5-person parties, take attendance, track strikes, and share a read-only lineup.
 
@@ -12,7 +12,7 @@ node server.js
 
 Then open http://localhost:4747, sign up, and create your guild. Each guild's data is saved in `guilds/<id>/data.json`, with an hourly copy in `guilds/<id>/backups/` (the newest 48 are kept). No `npm install` is needed. To use a different port, run `PORT=5000 node server.js`.
 
-If you used Muster before guilds existed, your old `data.json` is moved into a guild automatically the first time the server starts (the old file is renamed `data.json.moved`). If you already had accounts, the first one becomes its leader. If not, the first account you sign up on the server's own computer becomes its leader.
+If you used an earlier version from before guilds existed, your old `data.json` is moved into a guild automatically the first time the server starts (the old file is renamed `data.json.moved`). If you already had accounts, the first one becomes its leader. If not, the first account you sign up on the server's own computer becomes its leader.
 
 **Without Node:** double-click `index.html`. It works the same, but data is saved in that browser only, and share links are off (the "Export lineup (.html)" button still works).
 
