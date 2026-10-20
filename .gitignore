@@ -27,3 +27,6 @@ desktop.ini
 
 # Docker data folder (./data:/data)
 data/
+
+# Roster exports made for importing (member names)
+imports/

@@ -268,7 +268,7 @@ function adoptSelfAdds(list) {
   const fresh = list.filter(e => !have.has(e.id) && S.auction.categories.some(c => c.id === e.catId));
   if (!fresh.length) return;
   S.auction.entries.push(...fresh);
-  toast(fresh.length === 1 ? `@${fresh[0].name} joined ${S.auction.categories.find(c => c.id === fresh[0].catId).name}` : `${fresh.length} new reservations from members`, 3500);
+  toast(fresh.length === 1 ? `${atName(fresh[0])} joined ${S.auction.categories.find(c => c.id === fresh[0].catId).name}` : `${fresh.length} new reservations from members`, 3500);
   const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
   if (route().name === 'auction' && $('#modal').hidden && !typing) render();
 }
@@ -419,7 +419,7 @@ routes.events = (v) => {
   const evs = [...S.events].sort((a, b) => String(b.when).localeCompare(String(a.when)));
   v.innerHTML = `
     <div class="head"><div><h1>Events</h1><div class="sub">${S.events.length} events · ${activeMembers().length} active members</div></div>
-      <div class="row"><button class="btn primary" id="newEv">New event</button></div></div>
+      <div class="row"><button class="btn" id="impEvCsv">Import CSV</button><button class="btn primary" id="newEv">New event</button></div></div>
     ${evs.length ? `<div class="grid-cards">${evs.map(e => {
       const st = eventStats(e); const md = modeByKey(e.mode);
       return `<a class="card ev" href="#/board/${e.id}">
@@ -431,6 +431,7 @@ routes.events = (v) => {
       </a>`; }).join('')}</div>`
     : `<div class="empty-state"><h3>No events yet</h3>${S.members.length ? 'Create one and hit Auto-fill.' : 'Start by importing your roster, then create an event.'}<div class="row" style="justify-content:center;margin-top:14px">${S.members.length ? '' : '<a class="btn" href="#/roster">Go to roster</a>'}</div></div>`}`;
   $('#newEv').onclick = () => eventDialog();
+  $('#impEvCsv').onclick = () => lineupCsvDialog();
 };
 
 function eventDialog(existing) {
@@ -459,7 +460,7 @@ function eventDialog(existing) {
 function nextHour() { const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1); return d.toISOString(); }
 
 // ---------- views: board ----------
-let benchFilter = { q: '', role: 'all' };
+let benchFilter = { q: '', role: 'all', group: '' };
 routes.board = (v, id) => {
   const ev = eventById(id);
   if (!ev) { v.innerHTML = `<div class="empty-state"><h3>Event not found</h3><a class="btn" href="#/events">Back to events</a></div>`; return; }
@@ -494,9 +495,12 @@ function renderBoard(v, ev, readOnly, ctx = {}) {
       ${p.slots.map((_, i) => slotHtml(f, p, i)).join('')}
     </div>`;
 
+  // A bench group filter pointing at a group that was deleted just shows everyone.
+  const benchGroup = benchFilter.group && S.groups.find(g => g.id === benchFilter.group);
   const benchMembers = readOnly ? [] : activeMembers().filter(m => !placed.has(m.id))
     .filter(m => !ev.groupId || (S.groups.find(g => g.id === ev.groupId)?.memberIds || []).includes(m.id))
     .filter(m => benchFilter.role === 'all' || roleOf(m) === benchFilter.role)
+    .filter(m => !benchGroup || benchGroup.memberIds.includes(m.id))
     .filter(m => !benchFilter.q || (m.name + ' ' + m.job).toLowerCase().includes(benchFilter.q.toLowerCase()))
     .sort((a, b) => (absent.has(a.id) - absent.has(b.id)) || num(b.gs) - num(a.gs));
 
@@ -514,6 +518,7 @@ function renderBoard(v, ev, readOnly, ctx = {}) {
         <button class="btn" id="statusBtn">${ev.status === 'done' ? 'Reopen' : 'Mark done'}</button>
         <button class="btn" id="attBtn">Attendance</button>
         <button class="btn" id="moreBtn">More</button>
+        ${S.groups.length ? '<button class="btn" id="addGroupBtn" title="Put a whole group into empty slots">Add group</button>' : ''}
         <button class="btn primary" id="fillBtn">Auto-fill</button>
       </div>`}
     </div>
@@ -533,6 +538,7 @@ function renderBoard(v, ev, readOnly, ctx = {}) {
           <div class="row"><b>Bench</b><span class="muted mono">${benchMembers.length}</span><span class="grow"></span>
             <div class="tabs" id="roleTabs">${['all', 'tank', 'support', 'dps'].map(r => `<button data-r="${r}" class="${benchFilter.role === r ? 'on' : ''}">${r === 'all' ? 'All' : r[0].toUpperCase() + r.slice(1)}</button>`).join('')}</div></div>
           <input type="search" id="benchQ" placeholder="Search name or job" value="${esc(benchFilter.q)}">
+          ${S.groups.length ? `<select id="benchGroup" title="Show only one group on the bench"><option value="">All groups</option>${S.groups.map(g => `<option value="${g.id}" ${benchGroup && benchGroup.id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>` : ''}
           <div class="muted" style="font-size:12px">Drag onto a slot. Click a name to mark absent.</div>
         </div>
         <div class="bench-list" id="bench" data-bench="1">
@@ -554,6 +560,8 @@ function wireBoard(v, ev) {
   $('#needTank').onchange = (e) => { ev.needTank = e.target.checked; touch(); };
   $('#needSupport').onchange = (e) => { ev.needSupport = e.target.checked; touch(); };
   $('#moreBtn').onclick = () => moreDialog(ev);
+  if ($('#addGroupBtn')) $('#addGroupBtn').onclick = () => addGroupDialog(ev);
+  if ($('#benchGroup')) $('#benchGroup').onchange = (e) => { benchFilter.group = e.target.value; render(); };
   $('#benchQ').oninput = debounce((e) => { benchFilter.q = e.target.value; render(); setTimeout(() => { const q = $('#benchQ'); if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }); }, 150);
   $$('#roleTabs button').forEach(b => (b.onclick = () => { benchFilter.role = b.dataset.r; render(); }));
   $$('[data-addparty]').forEach(b => (b.onclick = () => { const f = ev.fields.find(x => x.id === b.dataset.addparty); f.parties.push(newParty(f.parties.length)); touch(); }));
@@ -617,6 +625,69 @@ function wireBoard(v, ev) {
   }, on);
 }
 
+// ---------- add a whole group to the board ----------
+// Puts a group's members into empty slots of one field, skipping anyone already placed or marked absent.
+// "Together" fills whole empty parties first (so a static of 5 lands in one party) and gives the rest
+// new parties; otherwise people take the first empty slots in order.
+function placeGroup(ev, group, fieldId, { together, addParties }) {
+  const mm = memberById(); const placed = placedIds(ev); const absent = new Set(ev.absent || []);
+  const people = group.memberIds.map(id => mm[id]).filter(m => m && m.active !== false);
+  const already = people.filter(m => placed.has(m.id));
+  const away = people.filter(m => !placed.has(m.id) && absent.has(m.id));
+  const queue = people.filter(m => !placed.has(m.id) && !absent.has(m.id));
+  const f = ev.fields.find(x => x.id === fieldId);
+  const size = f.parties[0]?.slots.length || S.partySize;
+  const put = (p, i) => { p.slots[i] = queue.shift().id; p.pins[i] = false; };
+  const fillEmpty = (p) => { if (p.locked) return; p.slots.forEach((id, i) => { if (!id && queue.length) put(p, i); }); };
+  const addParty = () => { const p = newParty(f.parties.length); p.slots = Array(size).fill(null); p.pins = Array(size).fill(false); f.parties.push(p); return p; };
+  const count = queue.length; let newParties = 0;
+  if (together) {
+    f.parties.filter(p => !p.locked && p.slots.every(id => !id)).forEach(p => queue.length && fillEmpty(p));
+    if (addParties) while (queue.length) { fillEmpty(addParty()); newParties++; }
+    else f.parties.forEach(fillEmpty);
+  } else {
+    f.parties.forEach(fillEmpty);
+    if (addParties) while (queue.length) { fillEmpty(addParty()); newParties++; }
+  }
+  return { placed: count - queue.length, already, away, left: queue, newParties };
+}
+function addGroupDialog(ev) {
+  const groups = [...S.groups].sort((a, b) => a.name.localeCompare(b.name));
+  openModal(`<h2>Add a group</h2>
+    <p class="muted" style="margin:0">Puts everyone from a group into empty slots. People already on this board, or marked absent, are skipped.</p>
+    <div class="form-grid">
+      <label class="field">Group<select id="agGroup">${groups.map(g => `<option value="${g.id}">${esc(g.name)} · ${g.memberIds.length}</option>`).join('')}</select></label>
+      <label class="field">Into<select id="agField">${ev.fields.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label>
+    </div>
+    <label class="check"><input type="checkbox" id="agTogether" checked> Keep them together (fill empty parties first, so a static stays in one party)</label>
+    <label class="check"><input type="checkbox" id="agAdd" checked> Add parties if there isn't room</label>
+    <div id="agPrev" class="muted" style="font-size:13px"></div>
+    <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="agGo">Add to board</button></div>`,
+  { onMount: (el, close) => {
+    const opts = () => ({ together: $('#agTogether', el).checked, addParties: $('#agAdd', el).checked });
+    const pick = () => groups.find(g => g.id === $('#agGroup', el).value);
+    const names = (list) => esc(list.slice(0, 6).map(m => m.name).join(', ')) + (list.length > 6 ? ` and ${list.length - 6} more` : '');
+    const preview = () => {
+      // Try it on a copy first, so the preview shows exactly what Add will do.
+      const r = placeGroup(JSON.parse(JSON.stringify(ev)), pick(), $('#agField', el).value, opts());
+      $('#agPrev', el).innerHTML = `<div style="color:var(--ink)"><b>${r.placed}</b> will be placed${r.newParties ? ` in ${r.newParties} new part${r.newParties === 1 ? 'y' : 'ies'} and any empty slots` : ''}.</div>
+        ${r.already.length ? `<div>${r.already.length} already on the board: ${names(r.already)}</div>` : ''}
+        ${r.away.length ? `<div>${r.away.length} marked absent: ${names(r.away)}</div>` : ''}
+        ${r.left.length ? `<div style="color:var(--warn)">${r.left.length} won't fit (no empty slots left): ${names(r.left)}. Tick "Add parties" to make room.</div>` : ''}`;
+      $('#agGo', el).disabled = !r.placed;
+    };
+    ['#agGroup', '#agField', '#agTogether', '#agAdd'].forEach(sel => ($(sel, el).onchange = preview));
+    preview();
+    $('#agGo', el).onclick = () => {
+      const g = pick(); const r = placeGroup(ev, g, $('#agField', el).value, opts());
+      ev.updatedAt = new Date().toISOString();
+      close(); commit();
+      toast(`Added ${r.placed} from ${g.name}${r.left.length ? ` · ${r.left.length} didn't fit` : ''}`, 3500);
+    };
+  } });
+}
+
+
 function pickerDialog(ev, fid, pid, i) {
   const placed = placedIds(ev); const absent = new Set(ev.absent || []);
   const list = activeMembers().filter(m => !placed.has(m.id)).sort((a, b) => num(b.gs) - num(a.gs));
@@ -675,8 +746,8 @@ function moreDialog(ev) {
       <button class="btn" id="clear">Clear unlocked parties</button>
     </div>
     <div class="row">
-      ${mode === 'server' ? `<button class="btn" id="share">${ev.shareToken ? 'New share link' : 'Create share link'}</button>${ev.shareToken ? '<button class="btn" id="unshare">Turn off share link</button>' : ''}` : '<span class="muted" style="font-size:12px">Share links need the local server (node server.js). You can still export a read-only file:</span>'}
-      <button class="btn" id="html">Export lineup (.html)</button>
+      ${mode === 'server' ? `<button class="btn" id="share">${ev.shareToken ? 'New share link' : 'Create share link'}</button>${ev.shareToken ? '<button class="btn" id="unshare">Turn off share link</button>' : ''}` : '<span class="muted" style="font-size:12px">Share links need the server (node server.js).</span>'}
+      <button class="btn" id="csv" title="Same columns as Events → Import CSV">Export lineup (.csv)</button>
       <button class="btn" id="txt">Copy as text</button>
       <button class="btn" onclick="print()">Print</button>
     </div>
@@ -692,7 +763,7 @@ function moreDialog(ev) {
     $('#clear', el).onclick = () => { ev.fields.forEach(f => f.parties.forEach(p => { if (!p.locked) { p.slots = p.slots.map(() => null); p.pins = p.pins.map(() => false); p.leader = null; } })); close(); commit(); };
     if ($('#share', el)) $('#share', el).onclick = () => { ev.shareToken = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2); close(); commit(); toast('Share link ready — it only works while your computer runs the server'); };
     if ($('#unshare', el)) $('#unshare', el).onclick = () => { ev.shareToken = null; close(); commit(); };
-    $('#html', el).onclick = () => { download(`${ev.title.replace(/[^\w\- ]+/g, '').trim() || 'lineup'}.html`, lineupHtml(ev), 'text/html'); };
+    $('#csv', el).onclick = () => { download(`${ev.title.replace(/[^\w\- ]+/g, '').trim() || 'lineup'}.csv`, lineupCsv(ev), 'text/csv'); };
     $('#txt', el).onclick = async () => { try { await navigator.clipboard.writeText(lineupText(ev)); toast('Lineup copied'); } catch { download('lineup.txt', lineupText(ev), 'text/plain'); } };
     $('#del', el).onclick = async () => { close(); if (await confirmBox(`Delete “${ev.title}” and its attendance?`)) { S.events = S.events.filter(x => x !== ev); persist(); location.hash = '#/events'; } };
   } });
@@ -707,18 +778,21 @@ function lineupText(ev) {
   return out.join('\n');
 }
 
-function lineupHtml(ev) {
+// Exports the lineup with the same columns Events → Import CSV reads, so it can move to another event or site.
+function lineupCsv(ev) {
   const mm = memberById();
-  const parties = (f) => f.parties.map(p => `<div class="p"><div class="h"><b>${esc(p.label)}</b>${p.note ? ` · ${esc(p.note)}` : ''}</div>${p.slots.map(id => {
-    const m = id && mm[id]; return m ? `<div class="s"><i class="${roleOf(m)}"></i>${p.leader === id ? '★ ' : ''}${esc(m.name)}<span>${esc(pretty(m.job))}</span></div>` : '<div class="s e">—</div>';
-  }).join('')}</div>`).join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(ev.title)}</title>
-<style>body{font:14px/1.4 system-ui,sans-serif;margin:0;padding:24px 16px;background:#12100e;color:#ece4d8}h1{font:600 24px Georgia,serif;margin:0}.sub{color:#9a8f80;margin:4px 0 20px}h2{font:600 18px Georgia,serif;margin:22px 0 10px}
-.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}.p{background:#1b1815;border:1px solid #342e28;border-radius:10px;padding:8px}.h{font-size:12px;color:#b3a796;padding:2px 4px 6px}.s{display:flex;gap:7px;align-items:center;padding:4px 6px}.s span{margin-left:auto;color:#7d7264;font-size:11px}.s.e{color:#7d7264}
-i{width:8px;height:8px;border-radius:50%;display:inline-block}i.tank{background:#6aa3d8}i.support{background:#7cc49a}i.dps{background:#d98366}
-@media(prefers-color-scheme:light){body{background:#f4efe6;color:#241d14}.p{background:#fffaf2;border-color:#e2d7c4}}</style></head>
-<body><h1>${esc(ev.title)}</h1><div class="sub">${esc(S.guild.name)} · ${esc(fmtWhen(ev.when))}</div>
-${ev.fields.map(f => `<h2>${esc(f.name)}</h2><div class="g">${parties(f)}</div>`).join('')}</body></html>`;
+  const q = (v) => { const s = String(v ?? ''); return /[",\r\n]|^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const rows = [['Field', 'Party', 'IGN', 'Class', 'Leader', 'Level', 'Gear Score']];
+  ev.fields.forEach(f => {
+    // Party names must be unique within a field, or the import would merge them.
+    const used = new Map();
+    f.parties.forEach((p, i) => {
+      let label = String(p.label || `P${i + 1}`); const n = (used.get(label) || 0) + 1; used.set(label, n); if (n > 1) label = `${label} (${n})`;
+      p.slots.forEach(id => { const m = id && mm[id]; if (m) rows.push([f.name, label, m.name, pretty(m.job), p.leader === id ? 'yes' : '', m.level ?? '', m.gs || '']); });
+    });
+  });
+  // The BOM lets Excel show names like Sapphireヅ correctly; the import ignores it.
+  return '\uFEFF' + rows.map(r => r.map(q).join(',')).join('\r\n') + '\r\n';
 }
 
 // ---------- views: roster ----------
@@ -838,6 +912,124 @@ function importDialog() {
     };
   } });
 }
+
+// ---------- import a lineup (an event) from CSV ----------
+// One row per person in slot order: Field (optional), Party, IGN, Class, Leader (optional).
+const LINEUP_ALIASES = {
+  field: ['field', 'map', 'area', 'side', 'zone'],
+  party: ['party', 'party name', 'group', 'pt', 'squad', 'team'],
+  leader: ['leader', 'party leader', 'is leader', 'lead'],
+};
+const LINEUP_SAMPLE = 'Field,Party,IGN,Class,Leader\nMain Field,Party 1,Aria,High Priest,yes\nMain Field,Party 1,Bran,Lord Knight,\nSub Field,Party 2,Cole,Sniper,';
+const lineupKey = (name) => String(name || '').trim().toLowerCase();
+function parseLineupCSV(text) {
+  const rows = parseCSV(String(text || '').trim());
+  if (rows.length < 2) return { error: 'Paste a header row and at least one person.' };
+  const head = rows[0].map(h => h.trim().toLowerCase().replace(/[_.]/g, ' ').replace(/\s+/g, ' '));
+  const col = (k) => { const i = head.findIndex(h => LINEUP_ALIASES[k].includes(h)); return i >= 0 ? i : null; };
+  const base = mapHeaders(rows[0]);
+  const c = { name: base.name, job: base.job, level: base.level, gs: base.gs, field: col('field'), party: col('party'), leader: col('leader') };
+  if (c.name == null) return { error: `Couldn't find a name column (IGN or Name). Headers seen: ${rows[0].join(', ')}` };
+  if (c.party == null) return { error: `Couldn't find a Party column. Headers seen: ${rows[0].join(', ')}` };
+  const get = (r, k) => (c[k] != null ? String(r[c[k]] ?? '').trim() : '');
+  const fields = []; const people = new Map(); let dupes = 0;
+  rows.slice(1).forEach(r => {
+    const name = get(r, 'name'); if (!name) return;
+    const fName = get(r, 'field') || 'Main'; const pName = get(r, 'party') || 'Party';
+    let f = fields.find(x => x.name === fName); if (!f) fields.push(f = { name: fName, parties: [] });
+    let p = f.parties.find(x => x.name === pName); if (!p) f.parties.push(p = { name: pName, members: [] });
+    const k = lineupKey(name);
+    if (people.has(k)) { dupes++; return; }
+    const person = { key: k, name, job: normalizeJob(get(r, 'job')), hasJob: !!get(r, 'job'), leader: /^(y|yes|true|1|x|leader|★)$/i.test(get(r, 'leader')),
+      level: get(r, 'level') ? num(get(r, 'level')) : null, gs: get(r, 'gs') ? num(get(r, 'gs')) : null };
+    people.set(k, person); p.members.push(person);
+  });
+  if (!people.size) return { error: 'No names found under the name column.' };
+  const byName = Object.fromEntries(S.members.map(m => [lineupKey(m.name), m]));
+  const list = [...people.values()].map(p => ({ ...p, existing: byName[p.key] || null }));
+  return { fields, people: list, dupes,
+    fresh: list.filter(p => !p.existing),
+    jobChanges: list.filter(p => p.existing && p.hasJob && p.existing.job !== p.job),
+    biggest: Math.max(...fields.flatMap(f => f.parties.map(p => p.members.length))) };
+}
+// The mode whose field names match the CSV's fields best (Main Field + Sub Field → Guild League).
+function guessLineupMode(fields) {
+  const names = new Set(fields.map(f => lineupKey(f.name)));
+  let best = S.modes[0], score = -1;
+  S.modes.forEach(md => { const s = md.fields.filter(f => names.has(lineupKey(f.name))).length; if (s > score) { best = md; score = s; } });
+  return best;
+}
+function lineupCsvDialog() {
+  openModal(`<h2>Import lineup from CSV</h2>
+    <p class="muted" style="margin:0">One row per person, in slot order. Columns: <span class="mono" style="font-size:12px">Field</span> (optional), <span class="mono" style="font-size:12px">Party</span>, <span class="mono" style="font-size:12px">IGN</span>, <span class="mono" style="font-size:12px">Class</span>, and optionally <span class="mono" style="font-size:12px">Leader</span> (“yes”), <span class="mono" style="font-size:12px">Level</span>, <span class="mono" style="font-size:12px">Gear Score</span>. A board's More → Export lineup (.csv) makes exactly this. Names are matched to your roster exactly; anyone who isn't in it leaves their slot empty.</p>
+    <div class="row"><input type="file" id="lcFile" accept=".csv,.tsv,.txt"><span class="grow"></span><button class="btn sm ghost" id="lcSample">Show an example</button></div>
+    <textarea id="lcCsv" placeholder="${esc(LINEUP_SAMPLE)}"></textarea>
+    <div id="lcPrev" class="muted" style="font-size:13px"></div>
+    <div id="lcOpts" style="display:none;gap:10px">
+      <div class="form-grid">
+        <label class="field" style="grid-column:1/-1">Event title<input type="text" id="lcTitle" placeholder="Leave blank for “Mode — date”"></label>
+        <label class="field">Mode<select id="lcMode">${S.modes.map(m => `<option value="${esc(m.key)}">${esc(m.label)}</option>`).join('')}</select></label>
+        <label class="field">Starts<input type="datetime-local" id="lcWhen" value="${esc(toLocalInput(nextHour()))}"></label>
+      </div>
+      <label class="check"><input type="checkbox" id="lcJobs" checked> Update job, level and gear score of people already in the roster (when the file has them)</label>
+    </div>
+    <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="lcGo" disabled>Create event</button></div>`,
+  { wide: true, onMount: (el, close) => {
+    let plan = null;
+    const prev = $('#lcPrev', el), go = $('#lcGo', el);
+    const check = () => {
+      plan = null; go.disabled = true; $('#lcOpts', el).style.display = 'none'; prev.style.color = '';
+      if (!$('#lcCsv', el).value.trim()) { prev.textContent = ''; return; }
+      const r = parseLineupCSV($('#lcCsv', el).value);
+      if (r.error) { prev.style.color = 'var(--danger)'; prev.textContent = r.error; return; }
+      plan = r;
+      const jobs = r.jobChanges.slice(0, 6).map(p => `${esc(p.name)} (${esc(pretty(p.existing.job))} → ${esc(pretty(p.job))})`).join(', ');
+      const unknown = [...new Set(r.people.filter(p => p.hasJob && !S.roles[p.job]).map(p => p.job))];
+      prev.innerHTML = `<div style="color:var(--ink)">${r.fields.map(f => `<b>${esc(f.name)}</b>: ${f.parties.length} parties, ${f.parties.reduce((a, p) => a + p.members.length, 0)} people`).join(' · ')}</div>
+        <div><b style="color:var(--ink-2)">${r.people.length - r.fresh.length}</b> of ${r.people.length} people are in your roster and will be placed${r.jobChanges.length ? ` · ${r.jobChanges.length} with a different job` : ''}</div>
+        ${r.fresh.length ? `<div style="color:var(--warn)">${r.fresh.length} not in your roster, so their slots stay empty: ${esc(r.fresh.slice(0, 12).map(p => p.name).join(', '))}${r.fresh.length > 12 ? ` and ${r.fresh.length - 12} more` : ''}. Add them in Roster first if you want them placed.</div>` : ''}
+        ${r.jobChanges.length ? `<div>Job changes: ${jobs}${r.jobChanges.length > 6 ? ` and ${r.jobChanges.length - 6} more` : ''}</div>` : ''}
+        ${r.biggest > S.partySize ? `<div style="color:var(--warn)">Some parties have ${r.biggest} people, so parties in this event get ${Math.min(12, r.biggest)} slots.</div>` : ''}
+        ${r.dupes ? `<div style="color:var(--warn)">${r.dupes} repeated name(s) skipped: each person goes in one slot.</div>` : ''}
+        ${unknown.length ? `<div>Unknown jobs (count as DPS until you set them in Settings): ${esc(unknown.map(pretty).join(', '))}</div>` : ''}`;
+      $('#lcMode', el).value = guessLineupMode(r.fields).key;
+      $('#lcOpts', el).style.display = 'grid'; go.disabled = false;
+    };
+    $('#lcCsv', el).oninput = debounce(check, 200);
+    $('#lcFile', el).onchange = async (e) => { const f = e.target.files[0]; if (f) { $('#lcCsv', el).value = await f.text(); check(); } };
+    $('#lcSample', el).onclick = () => { $('#lcCsv', el).value = LINEUP_SAMPLE; check(); };
+    go.onclick = () => {
+      if (!plan) return;
+      const now = new Date().toISOString(); const byKey = {}; const updateJobs = $('#lcJobs', el).checked;
+      // Only people already in the roster are placed; the roster itself never gains anyone here.
+      plan.people.forEach(p => {
+        const m = p.existing; if (!m) return;
+        if (updateJobs && p.hasJob && m.job !== p.job) { if (!S.roles[p.job]) S.roles[p.job] = 'dps'; m.job = p.job; m.updatedAt = now; }
+        if (updateJobs && p.level != null && m.level !== p.level) { m.level = p.level; m.updatedAt = now; }
+        if (updateJobs && p.gs && m.gs !== p.gs) { m.gs = p.gs; m.updatedAt = now; }
+        if (m.active === false) { m.active = true; m.updatedAt = now; }
+        byKey[p.key] = m;
+      });
+      const size = Math.max(1, Math.min(12, Math.max(S.partySize, plan.biggest)));
+      const md = modeByKey($('#lcMode', el).value) || S.modes[0];
+      const whenRaw = $('#lcWhen', el).value; const when = whenRaw ? new Date(whenRaw).toISOString() : null;
+      const title = $('#lcTitle', el).value.trim() || `${md.label} — ${when ? new Date(when).toLocaleDateString() : 'TBD'}`;
+      const fields = plan.fields.map(f => ({ id: uid('fd'), name: f.name, parties: f.parties.map((p, i) => {
+        const slots = Array(size).fill(null); let leader = null;
+        p.members.slice(0, size).forEach((x, j) => { const m = byKey[x.key]; if (!m) return; slots[j] = m.id; if (x.leader) leader = m.id; });
+        return { id: uid('pt'), label: p.name || `P${i + 1}`, leader, locked: false, note: '', slots, pins: Array(size).fill(false) };
+      }) }));
+      const ev = { id: uid('ev'), mode: md.key, title, when, groupId: null, status: 'draft', fields, absent: [], attendance: {},
+        needTank: md.needTank, needSupport: md.needSupport, shareToken: null, createdAt: now, updatedAt: now };
+      S.events.push(ev);
+      close(); persist();
+      const placedCount = plan.people.length - plan.fresh.length;
+      toast(`Event created: ${placedCount} placed${plan.fresh.length ? `, ${plan.fresh.length} empty slot(s) for names not in the roster` : ''}`, 4000);
+      location.hash = `#/board/${ev.id}`;
+    };
+  } });
+}
+
 
 function exportRosterCsv() {
   const att = attendanceStats();
@@ -1150,6 +1342,9 @@ function highlight(text, q) {
   return out;
 }
 const normName = (s) => { const a = String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); return a || String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''); };
+// The roster member a reservation belongs to, if any. Names not in the roster keep their Discord-style "@".
+const aucMember = (e, mm = memberById(), idx = rosterLookup()) => (e.memberId && mm[e.memberId]) || idx[normName(e.name)] || null;
+const atName = (e, mm, idx) => (aucMember(e, mm, idx) ? '' : '@') + e.name;
 function rosterLookup() { const idx = {}; S.members.forEach(m => { const k = normName(m.name); if (k && !idx[k]) idx[k] = m; }); return idx; }
 // Searchable name picker under a text input: type to filter, ↑↓ + Enter or click to pick.
 // items: [{ label, sub, keys, ...anything }]; onPick gets the chosen item.
@@ -1234,7 +1429,7 @@ routes.auction = (v) => {
   const counts = {}; list.forEach(e => { const k = normName(e.name); counts[k] = (counts[k] || 0) + 1; });
   const shareUrl = A.shareToken && mode === 'server' ? `${location.origin}/share/${A.shareToken}` : '';
 
-  const nameHtml = (e) => { const m = who(e); return `<b>@${esc(e.name)}</b>${m ? `<span class="muted" style="font-size:12px">${esc(pretty(m.job))}</span>` : hasRoster ? '<span class="pill warn" title="No roster member with this name — Edit to link one">not in roster</span>' : ''}`; };
+  const nameHtml = (e) => { const m = who(e); return `<b>${m ? '' : '@'}${esc(e.name)}</b>${m ? `<span class="muted" style="font-size:12px">${esc(pretty(m.job))}</span>` : hasRoster ? '<span class="pill warn" title="No roster member with this name — Edit to link one">not in roster</span>' : ''}`; };
 
   v.innerHTML = `
     <div class="head"><div><h1>Auction</h1><div class="sub">${totalWaiting} reservations waiting · ${A.categories.length} lists · ${given.length} given out</div></div>
@@ -1273,7 +1468,7 @@ routes.auction = (v) => {
     <div style="margin-top:22px">
       <button class="btn ghost" id="hist">${aucHist ? '▾' : '▸'} Given out (${given.length})</button>
       ${aucHist ? `<div class="table-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>Date</th><th>Member</th><th>List</th><th>Got</th><th></th></tr></thead><tbody>
-        ${given.map(e => `<tr><td class="mono">${esc(String(e.givenAt || '').slice(0, 10))}</td><td><b>@${esc(e.name)}</b></td><td>${esc(A.categories.find(c => c.id === e.catId)?.name || '—')}</td><td>${esc(e.givenNote || e.item)}</td>
+        ${given.map(e => `<tr><td class="mono">${esc(String(e.givenAt || '').slice(0, 10))}</td><td><b>${esc(atName(e, mm, idx))}</b></td><td>${esc(A.categories.find(c => c.id === e.catId)?.name || '—')}</td><td>${esc(e.givenNote || e.item)}</td>
           <td style="text-align:right"><button class="btn sm ghost" data-undo="${e.id}" title="Put back in the queue at their old spot">Undo</button></td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nothing given out yet.</td></tr>'}
       </tbody></table></div>` : ''}
     </div>`}`;
@@ -1293,12 +1488,12 @@ routes.auction = (v) => {
   $$('[data-up]').forEach(b => (b.onclick = () => move(b.dataset.up, -1)));
   $$('[data-down]').forEach(b => (b.onclick = () => move(b.dataset.down, 1)));
   if ($('#hist')) $('#hist').onclick = () => { aucHist = !aucHist; render(); };
-  $$('[data-undo]').forEach(b => (b.onclick = () => { const e = byId(b.dataset.undo); e.status = 'waiting'; delete e.givenAt; delete e.givenNote; commit(); toast(`@${e.name} is back in line`); }));
+  $$('[data-undo]').forEach(b => (b.onclick = () => { const e = byId(b.dataset.undo); e.status = 'waiting'; delete e.givenAt; delete e.givenNote; commit(); toast(`${atName(e)} is back in line`); }));
 };
 
 function aucGiveDialog(e) {
   const c = S.auction.categories.find(x => x.id === e.catId);
-  openModal(`<h2>Give to @${esc(e.name)}</h2>
+  openModal(`<h2>Give to ${esc(atName(e))}</h2>
     <div class="muted">${esc(c?.name || '')} · reserved: ${esc(e.item || '—')}</div>
     <label class="field">What they got<input type="text" id="gv" value="${esc(e.item)}"></label>
     <label class="check"><input type="checkbox" id="rq"> They still want more — add them again at the end of the list</label>
@@ -1308,7 +1503,7 @@ function aucGiveDialog(e) {
       const now = new Date().toISOString();
       Object.assign(e, { status: 'given', givenAt: now, givenNote: $('#gv', el).value.trim() });
       if ($('#rq', el).checked) S.auction.entries.push({ id: uid('rs'), catId: e.catId, name: e.name, memberId: e.memberId || null, item: e.item, status: 'waiting', pos: aucNextPos(e.catId), addedAt: now });
-      close(); commit(); toast(`Given to @${e.name}`);
+      close(); commit(); toast(`Given to ${atName(e)}`);
     };
   } });
 }
@@ -1390,7 +1585,7 @@ function aucPasteDialog() {
       const n = parsed.cats.reduce((a, c) => a + c.entries.length, 0);
       $('#pv', el).innerHTML = parsed.cats.length
         ? `<b>${n} reservations in ${parsed.cats.length} lists:</b> ${parsed.cats.map(c => `${esc(c.name)} (${c.entries.length})`).join(' · ')}
-           <div style="max-height:200px;overflow:auto;margin-top:6px" class="muted">${parsed.cats.map(c => `<div style="margin-top:6px;color:var(--ink)">${esc(c.name)}</div>${c.entries.map((e, i) => `<div>${i + 1}. <b style="color:var(--ink-2)">@${esc(e.name)}</b> — ${esc(e.item || '(no item)')}</div>`).join('')}`).join('')}</div>
+           <div style="max-height:200px;overflow:auto;margin-top:6px" class="muted">${parsed.cats.map(c => `<div style="margin-top:6px;color:var(--ink)">${esc(c.name)}</div>${c.entries.map((e, i) => `<div>${i + 1}. <b style="color:var(--ink-2)">${esc(atName(e))}</b> — ${esc(e.item || '(no item)')}</div>`).join('')}`).join('')}</div>
            ${parsed.skipped.length ? `<div style="color:var(--warn);margin-top:6px">Skipped ${parsed.skipped.length} line(s): ${esc(parsed.skipped.join(' | '))}</div>` : ''}`
         : '<span class="muted">Nothing recognized yet.</span>';
       $('#go', el).disabled = !parsed.cats.length;
@@ -1442,11 +1637,11 @@ function renderAuctionShare(v, d, opts = shareLinkOpts()) {
       </div>
       <div class="row"><button class="btn primary" id="rgo">Join the end of the list</button><span class="muted" id="rmsg" style="font-size:13px"></span></div></div>` : ''}
     <div class="card finder" style="margin-bottom:16px"><input type="search" id="sq" placeholder="Search an item or your name" value="${esc(q)}">
-      ${q.trim() ? (hits.map((h, n) => `<div class="hit ${n === 0 ? 'first' : ''}"><div class="grow"><b>@${esc(h.e.name)}</b><div class="q-item">${highlight(h.e.item, q)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
-        || d.auction.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => normName(x.e.name).includes(normName(q)))).map(h => `<div class="hit"><div class="grow"><b>@${esc(h.e.name)}</b><div class="q-item">${esc(h.e.item)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
+      ${q.trim() ? (hits.map((h, n) => `<div class="hit ${n === 0 ? 'first' : ''}"><div class="grow"><b>${h.e.inRoster ? '' : '@'}${esc(h.e.name)}</b><div class="q-item">${highlight(h.e.item, q)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
+        || d.auction.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => normName(x.e.name).includes(normName(q)))).map(h => `<div class="hit"><div class="grow"><b>${h.e.inRoster ? '' : '@'}${esc(h.e.name)}</b><div class="q-item">${esc(h.e.item)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
         || '<div class="muted">No match.</div>') : ''}</div>
     <div class="grid-cards">${d.auction.categories.map(c => `<div class="card"><div style="padding:12px 12px 4px"><b style="font:600 16px var(--serif)">${esc(c.name)}</b>${c.note ? `<div class="cat-note" style="margin:4px 0 0">${esc(c.note)}</div>` : ''}</div>
-      ${waiting(c.id).map((e, i) => `<div class="q-row" style="grid-template-columns:28px 1fr"><span class="q-pos">${i + 1}</span><div><b>@${esc(e.name)}</b>${e.item ? `<div class="q-item">${esc(e.item)}</div>` : ''}</div></div>`).join('') || '<div class="muted" style="padding:12px">Empty</div>'}</div>`).join('')}</div>`;
+      ${waiting(c.id).map((e, i) => `<div class="q-row" style="grid-template-columns:28px 1fr"><span class="q-pos">${i + 1}</span><div><b>${e.inRoster ? '' : '@'}${esc(e.name)}</b>${e.item ? `<div class="q-item">${esc(e.item)}</div>` : ''}</div></div>`).join('') || '<div class="muted" style="padding:12px">Empty</div>'}</div>`).join('')}</div>`;
   $('#sq').oninput = debounce((e) => { renderAuctionShare.q = e.target.value; renderAuctionShare(v, d, opts); const s = $('#sq'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 150);
   if (canAdd && !member) nameCombo($('#rn'), A.roster.map(n => ({ label: n, keys: [n] })), () => $('#ri').focus());
   if (canAdd) $('#rgo').onclick = async () => {

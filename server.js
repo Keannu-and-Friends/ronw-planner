@@ -61,6 +61,15 @@ function backup(gid) {
   all.slice(0, Math.max(0, all.length - 48)).forEach(f => fs.unlinkSync(path.join(dir, f)));
 }
 
+// Same name matching as the app: ignore case, spaces and symbols.
+const normName = (s) => { const a = String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); return a || String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''); };
+// Waiting reservations as shown publicly, each marked with whether the name is in the roster.
+function publicEntries(s) {
+  const ids = new Set((s.members || []).map(m => m.id));
+  const names = new Set((s.members || []).map(m => normName(m.name)).filter(Boolean));
+  return ((s.auction && s.auction.entries) || []).filter(e => e.status === 'waiting')
+    .map(({ catId, name, item, pos, memberId }) => ({ catId, name, item, pos, inRoster: (memberId && ids.has(memberId)) || names.has(normName(name)) }));
+}
 const nextPos = (a, catId) => (a.entries || []).filter(e => e.catId === catId).reduce((m, e) => Math.max(m, e.pos || 0), 0) + 1;
 // Active roster members a guildmate can pick their name from.
 const selfAddRoster = (s) => (s.members || []).filter(m => m.active !== false && m.name);
@@ -415,7 +424,7 @@ async function handleApi(req, res, p) {
     const a = s.auction || {};
     return send(res, 200, {
       guild: { name: g.name }, roles: s.roles || {}, events, members, me: members.find(m => m.id === myId) || null,
-      auction: { categories: (a.categories || []).map(({ id, name, note }) => ({ id, name, note })), entries: (a.entries || []).filter(e => e.status === 'waiting').map(({ catId, name, item, pos }) => ({ catId, name, item, pos })), selfAdd: !!a.selfAdd },
+      auction: { categories: (a.categories || []).map(({ id, name, note }) => ({ id, name, note })), entries: publicEntries(s), selfAdd: !!a.selfAdd },
     });
   }
   if (p === '/api/member/reserve' && req.method === 'POST') {
@@ -475,7 +484,7 @@ const server = http.createServer(async (req, res) => {
     const s = sh.s;
     if (sh.auction) {
       const a = s.auction;
-      const entries = (a.entries || []).filter(e => e.status === 'waiting').map(({ catId, name, item, pos }) => ({ catId, name, item, pos }));
+      const entries = publicEntries(s);
       const roster = a.selfAdd ? selfAddRoster(s).map(m => m.name).sort((x, y) => x.localeCompare(y)) : [];
       return send(res, 200, { guild: s.guild, auction: { categories: (a.categories || []).map(({ id, name, note }) => ({ id, name, note })), entries, selfAdd: !!a.selfAdd, roster } });
     }
