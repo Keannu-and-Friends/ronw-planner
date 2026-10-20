@@ -577,19 +577,25 @@ function wireBoard(v, ev) {
   });
 
   // drag and drop
-  let drag = null;
+  // #view outlives every redraw, so drop the previous board's listeners before adding these;
+  // otherwise each redraw stacks another set and every drop runs (and redraws) many times over.
+  if (v._dnd) v._dnd.abort();
+  v._dnd = new AbortController();
+  const on = { signal: v._dnd.signal };
+  let drag = null, over = null;
+  const setOver = (t) => { if (over === t) return; if (over) over.classList.remove('over'); over = t; if (t) t.classList.add('over'); };
   v.addEventListener('dragstart', (e) => {
     const el = e.target.closest('[data-mid]'); if (!el) return;
     drag = { mid: el.dataset.mid, from: el.dataset.slot || null };
     e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', drag.mid);
     el.classList.add('dragging');
-  });
-  v.addEventListener('dragend', (e) => { const el = e.target.closest('[data-mid]'); if (el) el.classList.remove('dragging'); $$('.over', v).forEach(x => x.classList.remove('over')); });
+  }, on);
+  v.addEventListener('dragend', (e) => { const el = e.target.closest('[data-mid]'); if (el) el.classList.remove('dragging'); setOver(null); drag = null; }, on);
   v.addEventListener('dragover', (e) => {
     const t = e.target.closest('.slot, [data-bench]'); if (!t || !drag) return;
-    e.preventDefault(); $$('.over', v).forEach(x => x !== t && x.classList.remove('over')); t.classList.add('over');
-  });
-  v.addEventListener('dragleave', (e) => { const t = e.target.closest('.slot, [data-bench]'); if (t && !t.contains(e.relatedTarget)) t.classList.remove('over'); });
+    e.preventDefault(); setOver(t);
+  }, on);
+  v.addEventListener('dragleave', (e) => { const t = e.target.closest('.slot, [data-bench]'); if (t && t === over && !t.contains(e.relatedTarget)) setOver(null); }, on);
   v.addEventListener('drop', (e) => {
     const t = e.target.closest('.slot, [data-bench]'); if (!t || !drag) return; e.preventDefault();
     const { mid, from } = drag; drag = null;
@@ -608,7 +614,7 @@ function wireBoard(v, ev) {
       (ev.absent || []).includes(mid) && ev.absent.splice(ev.absent.indexOf(mid), 1);
     }
     touch();
-  });
+  }, on);
 }
 
 function pickerDialog(ev, fid, pid, i) {
