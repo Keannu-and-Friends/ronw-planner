@@ -74,6 +74,7 @@ const blankState = () => ({
   roles: { ...DEFAULT_ROLES },
   modes: JSON.parse(JSON.stringify(DEFAULT_MODES)),
   members: [], groups: [], events: [], strikes: [],
+  strikeReset: 'monthly', // 'monthly': counts start at 0 each month (older strikes stay as history) | 'never'
   auction: { categories: [], entries: [], shareToken: null },
 });
 
@@ -341,7 +342,14 @@ async function refreshFromServer() {
 const roleOf = (m) => (m && S.roles[m.job]) || 'dps';
 const memberById = () => Object.fromEntries(S.members.map(m => [m.id, m]));
 const activeMembers = () => S.members.filter(m => m.active !== false);
-const strikeCount = (id) => S.strikes.filter(s => s.memberId === id).length;
+// Strikes count per calendar month when strikeReset is 'monthly': everyone starts the month at 0, and older strikes stay as history.
+const monthOf = (d) => { const x = d ? new Date(d) : new Date(); return isNaN(x) ? '' : `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`; };
+const strikeMonth = (st) => (/^\d{4}-\d{2}/.test(String(st.date)) ? String(st.date).slice(0, 7) : monthOf(st.date));
+const monthName = (ym) => { const [y, m] = ym.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }); };
+const strikesMonthly = () => S.strikeReset !== 'never';
+const strikeCounts = (st) => !strikesMonthly() || strikeMonth(st) === monthOf();
+const strikeCount = (id) => S.strikes.filter(st => st.memberId === id && strikeCounts(st)).length;
+const strikesLabel = () => (strikesMonthly() ? 'Strikes this month' : 'Strikes');
 const eventById = (id) => S.events.find(e => e.id === id);
 const TRASH_DAYS = 30;
 const isLive = (e) => !e.deletedAt && !e.archived;
@@ -836,7 +844,7 @@ function pickerDialog(ev, fid, pid, i) {
 function slotDialog(ev, fid, pid, i) {
   const { p } = findParty(ev, fid, pid); const m = memberById()[p.slots[i]];
   openModal(`<h2>${esc(m ? m.name : 'Removed member')}</h2>
-    ${m ? `<div class="muted">${esc(pretty(m.job))} · Lv ${esc(m.level || '?')} · GS ${fmtNum(m.gs)} · ${strikeCount(m.id)} strikes</div>` : ''}
+    ${m ? `<div class="muted">${esc(pretty(m.job))} · Lv ${esc(m.level || '?')} · GS ${fmtNum(m.gs)} · ${strikeCount(m.id)} ${strikesMonthly() ? 'strikes this month' : 'strikes'}</div>` : ''}
     <div class="row">
       ${m ? `<button class="btn" id="lead">${p.leader === m.id ? 'Remove leader' : 'Make leader'}</button>` : ''}
       <button class="btn" id="pin">${p.pins[i] ? 'Unpin' : 'Pin to this slot'}</button>
@@ -935,7 +943,7 @@ function lineupCsv(ev) {
 let rosterSort = { key: 'gs', dir: -1 }; let rosterQ = '';
 routes.roster = (v) => {
   const att = attendanceStats();
-  const cols = [['name', 'Name'], ['job', 'Job'], ['role', 'Role'], ['level', 'Lv', 1], ['gs', 'Gear score', 1], ['position', 'Rank'], ['contribution', 'Contribution', 1], ['att', 'Attendance', 1], ['strikes', 'Strikes', 1]];
+  const cols = [['name', 'Name'], ['job', 'Job'], ['role', 'Role'], ['level', 'Lv', 1], ['gs', 'Gear score', 1], ['position', 'Rank'], ['contribution', 'Contribution', 1], ['att', 'Attendance', 1], ['strikes', strikesLabel(), 1]];
   const val = (m, k) => k === 'role' ? roleOf(m) : k === 'att' ? (att[m.id]?.rate ?? -1) : k === 'strikes' ? strikeCount(m.id) : m[k];
   const rows = S.members.filter(m => !rosterQ || [m.name, m.job, m.position, m.discord].join(' ').toLowerCase().includes(rosterQ.toLowerCase()))
     .sort((a, b) => { const x = val(a, rosterSort.key), y = val(b, rosterSort.key); return (typeof x === 'number' || typeof y === 'number' ? num(x) - num(y) : String(x || '').localeCompare(String(y || ''))) * rosterSort.dir; });
@@ -1170,7 +1178,7 @@ function lineupCsvDialog() {
 function exportRosterCsv() {
   const att = attendanceStats();
   const q = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const head = ['Name', 'Job', 'Role', 'Level', 'Gear Score', 'Rank', 'Contribution', 'Weekly', 'Discord', 'Active', 'Attendance %', 'Strikes', 'Notes'];
+  const head = ['Name', 'Job', 'Role', 'Level', 'Gear Score', 'Rank', 'Contribution', 'Weekly', 'Discord', 'Active', 'Attendance %', strikesLabel(), 'Notes'];
   const rows = S.members.map(m => [m.name, pretty(m.job), roleOf(m), m.level, m.gs, m.position, m.contribution, m.weekly, m.discord, m.active === false ? 'no' : 'yes', att[m.id] ? Math.round(att[m.id].rate * 100) : '', strikeCount(m.id), m.notes]);
   download(`roster-${new Date().toISOString().slice(0, 10)}.csv`, [head, ...rows].map(r => r.map(q).join(',')).join('\n'), 'text/csv');
 }
@@ -1235,7 +1243,7 @@ routes.attendance = (v, eventId) => {
   v.innerHTML = `
     <div class="head"><div><h1>Attendance</h1><div class="sub">${taken.length} events with attendance taken</div></div>
       <div class="row"><select id="pick"><option value="">Take attendance for…</option>${S.events.filter(e => !e.deletedAt).sort((a, b) => String(b.when).localeCompare(String(a.when))).map(e => `<option value="${e.id}">${esc(e.title)}</option>`).join('')}</select></div></div>
-    ${rows.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Member</th><th>Job</th><th class="num">Present</th><th class="num">Late</th><th class="num">Absent</th><th class="num">Rate</th><th></th><th class="num">Strikes</th></tr></thead><tbody>
+    ${rows.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Member</th><th>Job</th><th class="num">Present</th><th class="num">Late</th><th class="num">Absent</th><th class="num">Rate</th><th></th><th class="num">${strikesLabel()}</th></tr></thead><tbody>
       ${rows.map(m => { const a = att[m.id]; return `<tr><td><b>${esc(m.name)}</b></td><td>${esc(pretty(m.job))}</td><td class="num">${a.present}</td><td class="num">${a.late}</td><td class="num">${a.absent}</td>
         <td class="num">${Math.round(a.rate * 100)}%</td><td><div class="bar"><i style="width:${Math.round(a.rate * 100)}%;${a.rate < .5 ? 'background:var(--danger)' : a.rate < .8 ? 'background:var(--warn)' : ''}"></i></div></td><td class="num">${strikeCount(m.id) || ''}</td></tr>`; }).join('')}
     </tbody></table></div>` : '<div class="empty-state"><h3>No attendance yet</h3>Pick an event above, or open one and press Attendance.</div>'}`;
@@ -1398,18 +1406,25 @@ function battleImportDialog(ev) {
 }
 
 // ---------- views: strikes ----------
+let strikesView = null; // a month like '2026-10', or 'all'
 routes.strikes = (v) => {
   const mm = memberById();
-  const list = [...S.strikes].sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  const per = {}; S.strikes.forEach(s => (per[s.memberId] = (per[s.memberId] || 0) + 1));
+  const months = [...new Set([monthOf(), ...S.strikes.map(strikeMonth).filter(Boolean)])].sort().reverse();
+  if (!strikesView || (strikesView !== 'all' && !months.includes(strikesView))) strikesView = strikesMonthly() ? monthOf() : 'all';
+  const shown = S.strikes.filter(st => strikesView === 'all' || strikeMonth(st) === strikesView);
+  const list = [...shown].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const per = {}; shown.forEach(st => (per[st.memberId] = (per[st.memberId] || 0) + 1));
   const top = Object.entries(per).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const period = strikesView === 'all' ? 'in total' : `in ${monthName(strikesView)}`;
   v.innerHTML = `
-    <div class="head"><div><h1>Strikes</h1><div class="sub">${S.strikes.length} strikes on ${Object.keys(per).length} members</div></div>
-      <div class="row"><button class="btn primary" id="ns">Add strike</button></div></div>
+    <div class="head"><div><h1>Strikes</h1><div class="sub">${shown.length} strike${shown.length === 1 ? '' : 's'} ${period} on ${Object.keys(per).length} member${Object.keys(per).length === 1 ? '' : 's'}${strikesMonthly() ? ' · counts start at 0 each month; older months stay here as history' : ''}</div></div>
+      <div class="row"><select id="strikeMonth">${months.map(m => `<option value="${m}" ${m === strikesView ? 'selected' : ''}>${esc(monthName(m))}${m === monthOf() ? ' (this month)' : ''}</option>`).join('')}<option value="all" ${strikesView === 'all' ? 'selected' : ''}>All time</option></select>
+        <button class="btn primary" id="ns">Add strike</button></div></div>
     ${top.length ? `<div class="row" style="margin-bottom:14px">${top.map(([id, n]) => `<span class="pill" style="font-size:12px">${esc(mm[id]?.name || '?')} <b class="mono">${n}</b></span>`).join('')}</div>` : ''}
     ${list.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Date</th><th>Member</th><th>Reason</th><th></th></tr></thead><tbody>
       ${list.map(s => `<tr><td class="mono">${esc(s.date)}</td><td><b>${esc(mm[s.memberId]?.name || 'Removed member')}</b></td><td>${esc(s.reason)}</td><td style="text-align:right"><button class="btn sm ghost" data-rm="${s.id}">Remove</button></td></tr>`).join('')}
-    </tbody></table></div>` : '<div class="empty-state"><h3>No strikes</h3>Add one by hand, or use “Strike absentees” after taking attendance.</div>'}`;
+    </tbody></table></div>` : `<div class="empty-state"><h3>No strikes ${period}</h3>Add one by hand, or use “Strike absentees” after taking attendance.</div>`}`;
+  $('#strikeMonth').onchange = (e) => { strikesView = e.target.value; render(); };
   $('#ns').onclick = () => {
     const ms = [...S.members].sort((a, b) => a.name.localeCompare(b.name));
     openModal(`<h2>Add strike</h2><div class="form-grid">
@@ -1431,7 +1446,8 @@ routes.settings = (v) => {
       <div class="card pad" style="display:grid;gap:12px">
         <b style="font:600 16px var(--serif)">Guild</b>
         <div class="form-grid"><label class="field">Guild name<input type="text" id="gname" value="${esc(S.guild.name)}"></label>
-        <label class="field">Party size<input type="number" id="psize" min="1" max="12" value="${S.partySize}"></label></div>
+        <label class="field">Party size<input type="number" id="psize" min="1" max="12" value="${S.partySize}"></label>
+        <label class="field">Strikes reset<select id="strikeReset"><option value="monthly" ${strikesMonthly() ? 'selected' : ''}>Every month (keep history)</option><option value="never" ${strikesMonthly() ? '' : 'selected'}>Never (count all time)</option></select></label></div>
         <div class="muted" style="font-size:12px">Changing party size applies to new events.</div>
       </div>
       <div class="card pad" style="display:grid;gap:12px">
@@ -1471,6 +1487,7 @@ routes.settings = (v) => {
     </div>`;
   $('#gname').onchange = (e) => { S.guild.name = e.target.value.trim() || 'My Guild'; commit(); };
   $('#psize').onchange = (e) => { S.partySize = Math.min(12, Math.max(1, num(e.target.value, 5))); commit(); };
+  $('#strikeReset').onchange = (e) => { S.strikeReset = e.target.value; strikesView = null; commit(); toast(S.strikeReset === 'never' ? 'Strikes now count all time' : 'Strike counts now start at 0 each month'); };
   $$('[data-job]').forEach(s => (s.onchange = () => { S.roles[s.dataset.job] = s.value; commit(); }));
   $('#addJob').onclick = () => { const j = normalizeJob($('#newJob').value); if (j && j !== 'NOVICE') { S.roles[j] = S.roles[j] || 'dps'; commit(); } };
   $('#addMode').onclick = () => { S.modes.push({ key: uid('md'), label: 'New mode', fields: [{ name: 'Main', cap: 40 }], needTank: false, needSupport: false }); commit(); };
