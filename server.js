@@ -1,6 +1,11 @@
-// Muster — guild party planner
+// ronw-planner — guild party planner
 // Zero-dependency Node server. Serves the app, handles accounts, and keeps each guild's data in guilds/<id>/data.json.
 // Usage: node server.js   (then open http://localhost:4747)
+// Settings (environment variables):
+//   PORT         port to listen on (default 4747)
+//   HOST         address to listen on (default 127.0.0.1; use 0.0.0.0 on hosting platforms)
+//   DATA_DIR     where users.json and guilds/ are kept (default: this folder; point it at a persistent volume when hosted)
+//   TRUST_PROXY  set to 1 when a hosting platform's proxy sits in front, so real visitor IPs and HTTPS are seen
 
 const http = require('http');
 const fs = require('fs');
@@ -9,8 +14,10 @@ const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT) || 4747;
 const ROOT = __dirname;
-const GUILDS = path.join(ROOT, 'guilds');
-const ACCOUNTS = path.join(ROOT, 'users.json');
+const DATA_DIR = path.resolve(process.env.DATA_DIR || ROOT);
+const GUILDS = path.join(DATA_DIR, 'guilds');
+const ACCOUNTS = path.join(DATA_DIR, 'users.json');
+const TRUST_PROXY = ['1', 'true', 'yes'].includes(String(process.env.TRUST_PROXY || '').toLowerCase());
 const SESSION_DAYS = 30;
 const COOKIE = 'muster_sid';
 const ROLES = { member: 1, officer: 2, leader: 3 };
@@ -144,9 +151,13 @@ function createGuild(d, name, leader) {
 
 // Requests from this machine that did not come through a proxy (Caddy, nginx, cloudflared all add a header).
 const isLoopback = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
-const isDirectLocal = (req) => isLoopback(req) && !req.headers['x-forwarded-for'] && !req.headers['cf-connecting-ip'] && !req.headers['x-real-ip'];
-const clientIp = (req) => (isLoopback(req) && (req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim())) || req.socket.remoteAddress;
-const isHttps = (req) => req.socket.encrypted || (isLoopback(req) && req.headers['x-forwarded-proto'] === 'https');
+const isDirectLocal = (req) => !TRUST_PROXY && isLoopback(req) && !req.headers['x-forwarded-for'] && !req.headers['cf-connecting-ip'] && !req.headers['x-real-ip'];
+// Proxy headers are only believed from a proxy we trust: one on this machine, or the hosting platform's when TRUST_PROXY is on.
+const trusted = (req) => TRUST_PROXY || isLoopback(req);
+// The proxy appends the real visitor IP last; earlier entries can be faked by the visitor.
+const lastForwarded = (req) => String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean).pop();
+const clientIp = (req) => (trusted(req) && (req.headers['cf-connecting-ip'] || req.headers['fly-client-ip'] || lastForwarded(req))) || req.socket.remoteAddress;
+const isHttps = (req) => req.socket.encrypted || (trusted(req) && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https');
 
 function cookieToken(req) {
   const m = String(req.headers.cookie || '').match(new RegExp(`(?:^|;\\s*)${COOKIE}=([a-f0-9]{64})`));
@@ -549,9 +560,10 @@ async function cli(cmd, name, guildArg) {
 const [cmd, arg, arg2] = process.argv.slice(2);
 if (['add-user', 'reset-password', 'make-leader', 'make-admin'].includes(cmd)) cli(cmd, arg, arg2);
 else {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   moveOldData();
   server.listen(PORT, process.env.HOST || '127.0.0.1', () => {
     const d = readDb();
-    console.log(`\n  Muster is running → http://localhost:${PORT}\n  Data folder: ${GUILDS}\n  ${d.users.length} account(s), ${d.guilds.length} guild(s) · sign-up is ${d.site.inviteOnly ? 'invite-only' : 'open'}\n`);
+    console.log(`\n  ronw-planner is running → http://localhost:${PORT}\n  Data folder: ${DATA_DIR}${TRUST_PROXY ? ' · trusting the hosting proxy' : ''}\n  ${d.users.length} account(s), ${d.guilds.length} guild(s) · sign-up is ${d.site.inviteOnly ? 'invite-only' : 'open'}\n`);
   });
 }

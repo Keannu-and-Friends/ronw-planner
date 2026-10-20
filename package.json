@@ -1,0 +1,13 @@
+{
+  "name": "ronw-planner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Guild party planner: roster, auto-filled parties, attendance, strikes and auction lists.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

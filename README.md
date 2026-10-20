@@ -16,6 +16,54 @@ If you used an earlier version from before guilds existed, your old `data.json` 
 
 **Without Node:** double-click `index.html`. It works the same, but data is saved in that browser only, and share links are off (the "Export lineup (.html)" button still works).
 
+## Host it on your own server and domain
+
+These steps are for a Linux server you control (a VPS or a home server) with a domain pointed at it. The app listens only on `127.0.0.1`, and a web server in front of it (Caddy or nginx) handles the domain and HTTPS.
+
+1. **Install Node 18 or newer** and Git on the server.
+2. **Get the code**:
+   ```
+   git clone https://github.com/Kurt-Zidane/ronw-planner.git
+   cd ronw-planner
+   ```
+3. **Bring the data, or start fresh.** Git never includes the data, so it isn't in the clone.
+   - To keep the existing accounts and guilds, copy `users.json` and the `guilds/` folder from the old computer into the `ronw-planner` folder. Send them privately: `users.json` holds hashed passwords and logins.
+   - To start fresh, skip this. The first account that signs up becomes the site admin, so sign up yourself right after the site goes live. To bring a guild's data over, use Settings → Download backup on the old computer, then Restore from backup in the new guild.
+4. **Keep it running** with pm2, which also restarts it after a crash or reboot:
+   ```
+   sudo npm install -g pm2
+   pm2 start server.js --name ronw-planner
+   pm2 save
+   pm2 startup
+   ```
+   Run the command that `pm2 startup` prints. To use another port, start it with `PORT=5000 pm2 start server.js --name ronw-planner`.
+5. **Point the domain at the server**: at the domain's DNS settings, add an `A` record for the domain (or a subdomain like `planner`) with the server's public IP.
+6. **Put Caddy in front**. It gets and renews the HTTPS certificate on its own. In `/etc/caddy/Caddyfile`:
+   ```
+   planner.example.com {
+     reverse_proxy 127.0.0.1:4747
+   }
+   ```
+   Then run `sudo systemctl reload caddy`. Open ports 80 and 443 in the firewall, and keep 4747 closed to the outside.
+
+   If you use **nginx** instead, proxy to `http://127.0.0.1:4747` and pass these headers, so logins see the real visitor IP and know the site is on HTTPS:
+   ```
+   proxy_set_header Host $host;
+   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+   proxy_set_header X-Forwarded-Proto $scheme;
+   ```
+7. Open the domain and log in. Invite links and share links use the domain automatically.
+
+**Updating** to a newer version: `git pull`, then `pm2 restart ronw-planner`. The data stays as it is.
+
+**Backups**: the server keeps 48 hourly copies per guild, but on the same disk. Copy `users.json` and `guilds/` somewhere else regularly.
+
+**Settings** (environment variables, all optional):
+- `PORT`: port to listen on (default `4747`).
+- `HOST`: address to listen on (default `127.0.0.1`). Only change it to `0.0.0.0` if the web server in front runs on another machine or in a container.
+- `DATA_DIR`: folder for `users.json` and `guilds/` (default: the app folder). Useful to keep data outside the code folder, for example `DATA_DIR=/var/lib/ronw-planner`.
+- `TRUST_PROXY=1`: only needed when the web server in front is **not** on the same machine (another server, or Docker). Without it, logins can't see the real visitor IP or that the site is on HTTPS. Don't set it if the app can be reached directly from the internet.
+
 ## Accounts, guilds and roles
 
 - The first account on the site is the **site admin**. Sign-up is **invite only** by default: people can only make an account through a guild's invite link (they join that guild as a Member) or a **new-guild link** from the site admin (they can start one guild and become its **Guild Leader**). The admin makes new-guild links, and can turn invite-only off, in Settings → Site. Each new-guild link works once and expires after 7 days.
@@ -43,5 +91,6 @@ If you used an earlier version from before guilds existed, your old `data.json` 
 
 - `server.js`: a zero-dependency Node server that serves the app and handles accounts, guilds, saving and share links.
 - `index.html`, `styles.css`, `app.js`: the app itself, in plain JavaScript with no build step.
-- `users.json`: accounts, logins and guild membership. Never served to browsers.
-- `guilds/`: one folder per guild with its `data.json` and `backups/`. Never served to browsers.
+- `package.json`: lets you start it with `npm start`. There are no dependencies to install.
+- `users.json`: accounts, logins and guild membership. Never served to browsers, and kept out of Git.
+- `guilds/`: one folder per guild with its `data.json` and `backups/`. Never served to browsers, and kept out of Git.
