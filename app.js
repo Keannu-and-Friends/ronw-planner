@@ -1235,37 +1235,74 @@ function attendanceStats() {
   return out;
 }
 
+// Overview sort: click a column header to sort by it, click again to flip. Default: worst rate first.
+let attSort = { key: 'rate', dir: 1 };
 routes.attendance = (v, eventId) => {
   if (eventId) return attendanceEvent(v, eventById(eventId));
   const taken = S.events.filter(e => e.attendance && Object.keys(e.attendance).length).sort((a, b) => String(b.when).localeCompare(String(a.when)));
   const att = attendanceStats();
-  const rows = S.members.filter(m => att[m.id]).sort((a, b) => att[a.id].rate - att[b.id].rate || att[b.id].absent - att[a.id].absent);
+  const val = (m, k) => k === 'name' ? m.name.toLowerCase() : k === 'job' ? pretty(m.job) : k === 'strikes' ? strikeCount(m.id) : att[m.id][k];
+  const rows = S.members.filter(m => att[m.id]).sort((a, b) => {
+    const x = val(a, attSort.key), y = val(b, attSort.key);
+    const c = typeof x === 'string' ? x.localeCompare(y) : x - y;
+    // Ties: worst rate first, then most absences, then name.
+    return c * attSort.dir || att[a.id].rate - att[b.id].rate || att[b.id].absent - att[a.id].absent || a.name.localeCompare(b.name);
+  });
+  const th = (key, label, num) => `<th class="${num ? 'num ' : ''}sortable" data-sort="${key}" title="Sort by ${label.toLowerCase()}">${label}${attSort.key === key ? (attSort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
   v.innerHTML = `
     <div class="head"><div><h1>Attendance</h1><div class="sub">${taken.length} events with attendance taken</div></div>
       <div class="row"><select id="pick"><option value="">Take attendance for…</option>${S.events.filter(e => !e.deletedAt).sort((a, b) => String(b.when).localeCompare(String(a.when))).map(e => `<option value="${e.id}">${esc(e.title)}</option>`).join('')}</select></div></div>
-    ${rows.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Member</th><th>Job</th><th class="num">Present</th><th class="num">Late</th><th class="num">Absent</th><th class="num">Rate</th><th></th><th class="num">${strikesLabel()}</th></tr></thead><tbody>
+    ${rows.length ? `<div class="table-wrap"><table class="t"><thead><tr>${th('name', 'Member')}${th('job', 'Job')}${th('present', 'Present', 1)}${th('late', 'Late', 1)}${th('absent', 'Absent', 1)}${th('rate', 'Rate', 1)}<th></th>${th('strikes', strikesLabel(), 1)}</tr></thead><tbody>
       ${rows.map(m => { const a = att[m.id]; return `<tr><td><b>${esc(m.name)}</b></td><td>${esc(pretty(m.job))}</td><td class="num">${a.present}</td><td class="num">${a.late}</td><td class="num">${a.absent}</td>
         <td class="num">${Math.round(a.rate * 100)}%</td><td><div class="bar"><i style="width:${Math.round(a.rate * 100)}%;${a.rate < .5 ? 'background:var(--danger)' : a.rate < .8 ? 'background:var(--warn)' : ''}"></i></div></td><td class="num">${strikeCount(m.id) || ''}</td></tr>`; }).join('')}
     </tbody></table></div>` : '<div class="empty-state"><h3>No attendance yet</h3>Pick an event above, or open one and press Attendance.</div>'}`;
   $('#pick').onchange = (e) => { if (e.target.value) location.hash = `#/attendance/${e.target.value}`; };
+  // Numbers sort highest first on the first click (except Rate, which starts worst first); text sorts A to Z.
+  $$('th[data-sort]').forEach(h => (h.onclick = () => {
+    const k = h.dataset.sort;
+    attSort = attSort.key === k ? { key: k, dir: -attSort.dir } : { key: k, dir: ['name', 'job', 'rate'].includes(k) ? 1 : -1 };
+    render();
+  }));
 };
 
-let attScope = 'lineup';
+let attScope = 'lineup', attFilter = 'all', attOrder = 'name', attFilterEvent = null;
+const ATT_STATUS_ORDER = { absent: 0, late: 1, unmarked: 2, present: 3 };
 function attendanceEvent(v, ev) {
   if (!ev) { v.innerHTML = '<div class="empty-state"><h3>Event not found</h3></div>'; return; }
   ev.attendance = ev.attendance || {};
+  // The sort is remembered across events; the filter starts at All for each event.
+  if (attFilterEvent !== ev.id) { attFilter = 'all'; attFilterEvent = ev.id; }
   const placed = placedIds(ev);
-  const list = (attScope === 'lineup' ? S.members.filter(m => placed.has(m.id) || ev.attendance[m.id]) : activeMembers()).sort((a, b) => a.name.localeCompare(b.name));
+  const everyone = attScope === 'lineup' ? S.members.filter(m => placed.has(m.id) || ev.attendance[m.id]) : activeMembers();
+  const statusOf = (m) => ev.attendance[m.id] || 'unmarked';
+  // Where each person sits in the lineup (field, then party, then slot).
+  const lineupPos = {}; let n = 0; ev.fields.forEach(f => f.parties.forEach(p => p.slots.forEach(id => { if (id && lineupPos[id] == null) lineupPos[id] = n++; })));
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  const sorters = {
+    name: byName,
+    status: (a, b) => ATT_STATUS_ORDER[statusOf(a)] - ATT_STATUS_ORDER[statusOf(b)] || byName(a, b),
+    job: (a, b) => pretty(a.job).localeCompare(pretty(b.job)) || byName(a, b),
+    lineup: (a, b) => (lineupPos[a.id] ?? 1e9) - (lineupPos[b.id] ?? 1e9) || byName(a, b),
+  };
+  const tally = { all: everyone.length, unmarked: 0, present: 0, late: 0, absent: 0 }; everyone.forEach(m => tally[statusOf(m)]++);
+  const list = everyone.filter(m => attFilter === 'all' || statusOf(m) === attFilter).sort(sorters[attOrder] || byName);
   const counts = { present: 0, late: 0, absent: 0 }; Object.values(ev.attendance).forEach(s => counts[s] != null && counts[s]++);
   v.innerHTML = `
-    <div class="head"><div><h1>Attendance</h1><div class="sub">${esc(ev.title)} · ${esc(fmtWhen(ev.when))} · ${counts.present} present · ${counts.late} late · ${counts.absent} absent · ${list.length - Object.keys(ev.attendance).filter(id => list.some(m => m.id === id)).length} unmarked</div></div>
+    <div class="head"><div><h1>Attendance</h1><div class="sub">${esc(ev.title)} · ${esc(fmtWhen(ev.when))} · ${counts.present} present · ${counts.late} late · ${counts.absent} absent · ${tally.unmarked} unmarked</div></div>
       <div class="row"><a class="btn ghost" href="#/board/${ev.id}">← Lineup</a>
         <div class="tabs" id="scope"><button data-s="lineup" class="${attScope === 'lineup' ? 'on' : ''}">Lineup</button><button data-s="all" class="${attScope === 'all' ? 'on' : ''}">Whole roster</button></div>
         <button class="btn" id="allP">Mark unmarked present</button><button class="btn" id="strike">Strike absentees</button>
         <button class="btn primary" id="battle" title="Paste the game's results export to mark who joined">Import battle results</button></div></div>
+    <div class="row" style="margin-bottom:10px">
+      <div class="tabs" id="attFilter">${['all', 'unmarked', 'present', 'late', 'absent'].map(k => `<button data-f="${k}" class="${attFilter === k ? 'on' : ''}">${k[0].toUpperCase() + k.slice(1)} <span class="mono">${tally[k]}</span></button>`).join('')}</div>
+      <span class="grow"></span>
+      <label class="row" style="gap:6px;font-size:13px">Sort by <select id="attOrder">${[['name', 'Name'], ['status', 'Status (absent first)'], ['job', 'Job'], ['lineup', 'Lineup order']].map(([k, l]) => `<option value="${k}" ${attOrder === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </div>
     <div class="card">${list.map(m => { const s = ev.attendance[m.id]; return `<div class="att-row"><div><span class="dot ${roleOf(m)}"></span> <b>${esc(m.name)}</b> <span class="muted" style="font-size:12px">${esc(pretty(m.job))}${placed.has(m.id) ? '' : ' · not in lineup'}</span></div>
-      <div class="seg" data-id="${m.id}">${['present', 'late', 'absent'].map(k => `<button class="${k} ${s === k ? 'on' : ''}" data-k="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div></div>`; }).join('') || '<div class="muted" style="padding:16px">Nobody in this lineup yet.</div>'}</div>`;
+      <div class="seg" data-id="${m.id}">${['present', 'late', 'absent'].map(k => `<button class="${k} ${s === k ? 'on' : ''}" data-k="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div></div>`; }).join('') || `<div class="muted" style="padding:16px">${everyone.length ? `Nobody is ${attFilter} here.` : 'Nobody in this lineup yet.'}</div>`}</div>`;
   $$('#scope button').forEach(b => (b.onclick = () => { attScope = b.dataset.s; render(); }));
+  $$('#attFilter button').forEach(b => (b.onclick = () => { attFilter = b.dataset.f; render(); }));
+  $('#attOrder').onchange = (e) => { attOrder = e.target.value; render(); };
   $$('.seg').forEach(seg => $$('button', seg).forEach(b => (b.onclick = () => {
     const id = seg.dataset.id; if (ev.attendance[id] === b.dataset.k) delete ev.attendance[id]; else ev.attendance[id] = b.dataset.k; commit();
   })));

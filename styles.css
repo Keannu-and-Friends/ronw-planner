@@ -240,3 +240,6 @@ body.share .board { grid-template-columns: 1fr; }
 .parties.over { outline: 2px dashed var(--line-2); outline-offset: 4px; border-radius: var(--radius); }
 .toast { display: flex; align-items: center; gap: 10px; }
 .toast .btn { background: var(--bg); color: var(--ink); border-color: transparent; }
+
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--ink); }
