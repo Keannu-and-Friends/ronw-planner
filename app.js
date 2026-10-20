@@ -536,7 +536,7 @@ function renderBoard(v, ev, readOnly, ctx = {}) {
   };
   const partyHtml = (f, p) => `
     <div class="party ${p.locked ? 'locked' : ''}" data-party="${f.id}|${p.id}">
-      <div class="party-top"><b>${esc(p.label)}</b>${p.note ? `<span class="muted" title="${esc(p.note)}">· ${esc(p.note.slice(0, 18))}</span>` : ''}
+      <div class="party-top" ${readOnly ? '' : 'draggable="true" title="Drag to move this whole party"'}>${readOnly ? '' : '<span class="grip" aria-hidden="true">⠿</span>'}<b>${esc(p.label)}</b>${p.note ? `<span class="muted" title="${esc(p.note)}">· ${esc(p.note.slice(0, 18))}</span>` : ''}
         <span class="gs" title="Total gear score">${fmtNum(partyGs(p, mm))}</span>
         ${readOnly ? '' : `<button class="icon-btn ${p.locked ? 'on' : ''}" data-act="lock" title="${p.locked ? 'Unlock' : 'Lock'} party">${p.locked ? '🔒' : '🔓'}</button><button class="icon-btn" data-act="party" title="Party options">⋯</button>`}
       </div>
@@ -579,7 +579,7 @@ function renderBoard(v, ev, readOnly, ctx = {}) {
       <div class="fields">
         ${ev.fields.map(f => `<section><div class="field-head"><h2>${esc(f.name)}</h2><span class="muted mono" style="font-size:12px">${f.parties.reduce((a, p) => a + p.slots.filter(Boolean).length, 0)}/${f.parties.length * S.partySize}</span>
           ${readOnly ? '' : `<span class="grow"></span><button class="btn sm ghost no-print" data-addparty="${f.id}">+ party</button>`}</div>
-          <div class="parties">${f.parties.map(p => partyHtml(f, p)).join('')}</div></section>`).join('')}
+          <div class="parties" data-field="${f.id}">${f.parties.map(p => partyHtml(f, p)).join('')}</div></section>`).join('')}
       </div>
       ${readOnly ? '' : `<aside class="card bench no-print">
         <div class="bench-head">
@@ -641,18 +641,44 @@ function wireBoard(v, ev) {
   let drag = null, over = null;
   const setOver = (t) => { if (over === t) return; if (over) over.classList.remove('over'); over = t; if (t) t.classList.add('over'); };
   v.addEventListener('dragstart', (e) => {
+    const top = e.target.closest('.party-top');
+    if (top) {
+      const pe = top.closest('.party'); drag = { party: pe.dataset.party };
+      e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'party');
+      pe.classList.add('dragging'); return;
+    }
     const el = e.target.closest('[data-mid]'); if (!el) return;
     drag = { mid: el.dataset.mid, from: el.dataset.slot || null };
     e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', drag.mid);
     el.classList.add('dragging');
   }, on);
-  v.addEventListener('dragend', (e) => { const el = e.target.closest('[data-mid]'); if (el) el.classList.remove('dragging'); setOver(null); drag = null; }, on);
+  v.addEventListener('dragend', () => { $$('.dragging', v).forEach(x => x.classList.remove('dragging')); setOver(null); drag = null; }, on);
   v.addEventListener('dragover', (e) => {
-    const t = e.target.closest('.slot, [data-bench]'); if (!t || !drag) return;
+    if (!drag) return;
+    const t = e.target.closest((drag && drag.party ? '.party, .parties' : '.slot, [data-bench]'));
+    // A party can't be dropped onto itself. (Only for party drags: slots have no data-party, so the check must not run for people.)
+    if (!t || (drag.party && t.dataset.party === drag.party)) return;
     e.preventDefault(); setOver(t);
   }, on);
-  v.addEventListener('dragleave', (e) => { const t = e.target.closest('.slot, [data-bench]'); if (t && t === over && !t.contains(e.relatedTarget)) setOver(null); }, on);
+  v.addEventListener('dragleave', (e) => { if (!drag) return; const t = e.target.closest((drag && drag.party ? '.party, .parties' : '.slot, [data-bench]')); if (t && t === over && !t.contains(e.relatedTarget)) setOver(null); }, on);
   v.addEventListener('drop', (e) => {
+    if (drag && drag.party) {
+      const t = e.target.closest('.party, .parties'); if (!t) return; e.preventDefault();
+      const [sf, sp] = drag.party.split('|'); drag = null; setOver(null);
+      const from = ev.fields.find(f => f.id === sf); const moving = from && from.parties.find(p => p.id === sp); if (!moving) return;
+      let to, at;
+      if (t.classList.contains('party')) {
+        const [tf, tp] = t.dataset.party.split('|'); if (tp === sp) return;
+        to = ev.fields.find(f => f.id === tf); at = to.parties.findIndex(p => p.id === tp);
+      } else { to = ev.fields.find(f => f.id === t.dataset.field); at = to ? to.parties.length : -1; }
+      if (!to || at < 0) return;
+      // Dropped on a party: take its place (it shifts over). Dropped in a field's empty space: go last.
+      const was = from.parties.indexOf(moving);
+      from.parties.splice(was, 1);
+      if (from === to && !t.classList.contains('party')) at = to.parties.length;
+      to.parties.splice(Math.min(at, to.parties.length), 0, moving);
+      touch(); return;
+    }
     const t = e.target.closest('.slot, [data-bench]'); if (!t || !drag) return; e.preventDefault();
     const { mid, from } = drag; drag = null;
     if (t.dataset.bench) { if (from) { removeFromEvent(ev, mid); touch(); } return; }

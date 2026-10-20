@@ -233,3 +233,8 @@ body.share .board { grid-template-columns: 1fr; }
 .member-bar .ub-guild .btn { width: auto; }
 
 .q-row.mine { background: color-mix(in srgb, var(--brass) 10%, transparent); }
+.party-top[draggable] { cursor: grab; }
+.party-top .grip { color: var(--ink-3); font-size: 12px; line-height: 1; }
+.party.dragging { opacity: .45; }
+.party.over { outline: 2px dashed var(--brass); outline-offset: 2px; }
+.parties.over { outline: 2px dashed var(--line-2); outline-offset: 4px; border-radius: var(--radius); }
