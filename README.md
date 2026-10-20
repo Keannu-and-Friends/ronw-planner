@@ -16,9 +16,33 @@ If you used an earlier version from before guilds existed, your old `data.json` 
 
 **Without Node:** double-click `index.html`. It works the same, but data is saved in that browser only, and share links are off (the "Export lineup (.html)" button still works).
 
-## Host it on your own server and domain
+## Run it with Docker
 
-These steps are for a Linux server you control (a VPS or a home server) with a domain pointed at it. The app listens only on `127.0.0.1`, and a web server in front of it (Caddy or nginx) handles the domain and HTTPS.
+Needs Docker with Compose. In the project folder:
+
+```
+docker compose up -d --build
+```
+
+The app runs at `127.0.0.1:4747` on that machine, restarts on its own, and keeps accounts and guild data in a Docker volume (`ronw-data`), so they survive rebuilds and updates. To put it on a domain, point the server's web server (nginx, Apache, ...) or a Cloudflare Tunnel at `http://127.0.0.1:4747`. With nginx, pass the headers listed under step 6 below.
+
+To change the port or how it's exposed, copy `.env.example` to `.env` and edit it.
+
+- **Update**: `git pull`, then `docker compose up -d --build`.
+- **Logs**: `docker compose logs -f`
+- **Account commands**: `docker compose exec app node server.js reset-password <name>` (also `add-user`, `make-leader`, `make-admin`).
+- **Bring existing data in** (`users.json` and `guilds/` from another computer):
+  ```
+  docker compose cp users.json app:/data/
+  docker compose cp guilds app:/data/
+  docker compose exec -u root app chown -R node:node /data
+  docker compose restart app
+  ```
+- **Back up the data** to a `ronw-backup` folder on the server: `docker compose cp app:/data ./ronw-backup`
+
+## Host it on your own server and domain (without Docker)
+
+These steps are for a Linux server you control (a VPS or a home server) with a domain pointed at it. The app listens only on `127.0.0.1`, and a web server in front of it (nginx here) handles the domain and HTTPS.
 
 1. **Install Node 18 or newer** and Git on the server.
 2. **Get the code**:
@@ -38,20 +62,27 @@ These steps are for a Linux server you control (a VPS or a home server) with a d
    ```
    Run the command that `pm2 startup` prints. To use another port, start it with `PORT=5000 pm2 start server.js --name ronw-planner`.
 5. **Point the domain at the server**: at the domain's DNS settings, add an `A` record for the domain (or a subdomain like `planner`) with the server's public IP.
-6. **Put Caddy in front**. It gets and renews the HTTPS certificate on its own. In `/etc/caddy/Caddyfile`:
+6. **Put nginx in front.** Create `/etc/nginx/sites-available/ronw-planner`:
    ```
-   planner.example.com {
-     reverse_proxy 127.0.0.1:4747
+   server {
+     listen 80;
+     server_name planner.example.com;
+
+     location / {
+       proxy_pass http://127.0.0.1:4747;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+     }
    }
    ```
-   Then run `sudo systemctl reload caddy`. Open ports 80 and 443 in the firewall, and keep 4747 closed to the outside.
-
-   If you use **nginx** instead, proxy to `http://127.0.0.1:4747` and pass these headers, so logins see the real visitor IP and know the site is on HTTPS:
+   The three `proxy_set_header` lines let logins see the real visitor IP and know the site is on HTTPS. Turn it on and get a free HTTPS certificate, which certbot also renews:
    ```
-   proxy_set_header Host $host;
-   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-   proxy_set_header X-Forwarded-Proto $scheme;
+   sudo ln -s /etc/nginx/sites-available/ronw-planner /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d planner.example.com
    ```
+   Open ports 80 and 443 in the firewall, and keep 4747 closed to the outside. No ports to open? Use a Cloudflare Tunnel pointed at `http://localhost:4747` instead of nginx.
 7. Open the domain and log in. Invite links and share links use the domain automatically.
 
 **Updating** to a newer version: `git pull`, then `pm2 restart ronw-planner`. The data stays as it is.
@@ -92,5 +123,6 @@ These steps are for a Linux server you control (a VPS or a home server) with a d
 - `server.js`: a zero-dependency Node server that serves the app and handles accounts, guilds, saving and share links.
 - `index.html`, `styles.css`, `app.js`: the app itself, in plain JavaScript with no build step.
 - `package.json`: lets you start it with `npm start`. There are no dependencies to install.
+- `Dockerfile`, `docker-compose.yml`, `.env.example`: the Docker setup. The image never contains `users.json` or `guilds/`.
 - `users.json`: accounts, logins and guild membership. Never served to browsers, and kept out of Git.
 - `guilds/`: one folder per guild with its `data.json` and `backups/`. Never served to browsers, and kept out of Git.

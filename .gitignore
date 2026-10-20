@@ -13,6 +13,7 @@ backups/
 # Secrets and server settings
 .env
 .env.*
+!.env.example
 
 # Local tool settings
 .claude

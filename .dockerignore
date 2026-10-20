@@ -1,0 +1,16 @@
+# Keep private data and local clutter out of the image
+users.json
+guilds/
+data.json
+data.json.moved
+backups/
+*.tmp
+.env
+.env.*
+.git/
+.claude/
+node_modules/
+*.log
+docker-compose.yml
+Dockerfile
+.dockerignore

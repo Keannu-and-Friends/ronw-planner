@@ -1,0 +1,25 @@
+# ronw-planner with Docker Compose
+#
+#   docker compose up -d --build
+#
+# By default the app is reachable from this machine only (127.0.0.1:4747). Put the server's own
+# web server (nginx, Apache, ...) or a Cloudflare Tunnel in front of it for the domain and HTTPS.
+# Settings come from .env (see .env.example).
+
+services:
+  app:
+    build: .
+    image: ronw-planner
+    container_name: ronw-planner
+    restart: unless-stopped
+    environment:
+      # 1 = trust the proxy in front for the visitor's IP and HTTPS. Set 0 only if APP_BIND exposes the app directly.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+    volumes:
+      # Accounts and guild data. Survives rebuilds and updates.
+      - ronw-data:/data
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-4747}:4747"
+
+volumes:
+  ronw-data:
