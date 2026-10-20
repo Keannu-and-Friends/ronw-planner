@@ -9,6 +9,7 @@ steps:
         from_secret: SSH_KEY
       SSH_HOST: root@10.0.10.222
       PROJECT_DIRECTORY: /mnt/nvme2/files/docker\ projects/service_queue/ronw-planner
+      REGISTRY_IMAGE_TAG: ronw-planner:latest
     commands:
       - apk add openssh
       - mkdir -p /root/.ssh/
