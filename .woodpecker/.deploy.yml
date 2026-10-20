@@ -32,8 +32,5 @@ when:
     event:
       - push
       - manual
-
-depends_on:
-  - build
-
+      
 skip_clone: true
