@@ -18,6 +18,12 @@ function toast(msg, ms = 2200) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
   clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), ms);
 }
+// A toast with one button, like "Event deleted · Undo".
+function toastAction(msg, label, onClick, ms = 8000) {
+  const t = $('#toast'); t.innerHTML = `<span>${esc(msg)}</span> <button class="btn sm" id="toastBtn">${esc(label)}</button>`; t.hidden = false;
+  clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), ms);
+  $('#toastBtn', t).onclick = () => { clearTimeout(toast._t); t.hidden = true; onClick(); };
+}
 
 function openModal(html, { wide = false, onMount } = {}) {
   const m = $('#modal');
@@ -337,6 +343,24 @@ const memberById = () => Object.fromEntries(S.members.map(m => [m.id, m]));
 const activeMembers = () => S.members.filter(m => m.active !== false);
 const strikeCount = (id) => S.strikes.filter(s => s.memberId === id).length;
 const eventById = (id) => S.events.find(e => e.id === id);
+const TRASH_DAYS = 30;
+const isLive = (e) => !e.deletedAt && !e.archived;
+const deletedEvents = () => S.events.filter(e => e.deletedAt).sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
+const trashDaysLeft = (e) => Math.max(0, Math.ceil((new Date(e.deletedAt).getTime() + TRASH_DAYS * 864e5 - Date.now()) / 864e5));
+// Moves an event to Recently deleted. Its attendance keeps counting until it's removed for good.
+function trashEvent(ev) {
+  ev.deletedAt = new Date().toISOString(); if (me?.user) ev.deletedBy = me.user;
+  persist(); location.hash = '#/events';
+  toastAction(`“${ev.title}” moved to Recently deleted`, 'Undo', () => restoreEvent(ev));
+}
+function restoreEvent(ev) { delete ev.deletedAt; delete ev.deletedBy; commit(); toast(`Restored “${ev.title}”`); }
+// Removes events that have been in Recently deleted for more than 30 days. Returns true if any were removed.
+function purgeOldDeleted() {
+  const cutoff = Date.now() - TRASH_DAYS * 864e5;
+  const keep = S.events.filter(e => !e.deletedAt || new Date(e.deletedAt).getTime() > cutoff);
+  if (keep.length === S.events.length) return false;
+  S.events = keep; return true;
+}
 const modeByKey = (k) => S.modes.find(m => m.key === k);
 
 function newParty(i) { return { id: uid('pt'), label: `P${i + 1}`, leader: null, locked: false, note: '', slots: Array(S.partySize).fill(null), pins: Array(S.partySize).fill(false) }; }
@@ -463,10 +487,15 @@ function render() {
 window.addEventListener('hashchange', () => { if (!appReady) return; window.scrollTo(0, 0); render(); });
 
 // ---------- views: events ----------
+let showArchived = false, showDeleted = false;
 routes.events = (v) => {
-  const evs = [...S.events].sort((a, b) => String(b.when).localeCompare(String(a.when)));
+  if (purgeOldDeleted()) persist();
+  const byDate = (a, b) => String(b.when).localeCompare(String(a.when));
+  const evs = S.events.filter(isLive).sort(byDate);
+  const archived = S.events.filter(e => e.archived && !e.deletedAt).sort(byDate);
+  const deleted = deletedEvents();
   v.innerHTML = `
-    <div class="head"><div><h1>Events</h1><div class="sub">${S.events.length} events · ${activeMembers().length} active members</div></div>
+    <div class="head"><div><h1>Events</h1><div class="sub">${evs.length} events · ${activeMembers().length} active members</div></div>
       <div class="row"><button class="btn" id="impEvCsv">Import CSV</button><button class="btn primary" id="newEv">New event</button></div></div>
     ${evs.length ? `<div class="grid-cards">${evs.map(e => {
       const st = eventStats(e); const md = modeByKey(e.mode);
@@ -477,8 +506,26 @@ routes.events = (v) => {
         <div class="meter"><i style="width:${st.total ? Math.round(st.filled / st.total * 100) : 0}%"></i></div>
         <div class="row muted" style="font-size:12px"><span class="mono">${st.filled}/${st.total}</span> filled<span class="grow"></span>${e.attendance && Object.keys(e.attendance).length ? 'Attendance taken' : ''}</div>
       </a>`; }).join('')}</div>`
-    : `<div class="empty-state"><h3>No events yet</h3>${S.members.length ? 'Create one and hit Auto-fill.' : 'Start by importing your roster, then create an event.'}<div class="row" style="justify-content:center;margin-top:14px">${S.members.length ? '' : '<a class="btn" href="#/roster">Go to roster</a>'}</div></div>`}`;
+    : `<div class="empty-state"><h3>No events yet</h3>${S.members.length ? 'Create one and hit Auto-fill.' : 'Start by importing your roster, then create an event.'}<div class="row" style="justify-content:center;margin-top:14px">${S.members.length ? '' : '<a class="btn" href="#/roster">Go to roster</a>'}</div></div>`}
+    ${archived.length ? `<div style="margin-top:22px"><button class="btn ghost" id="toggleArchived">${showArchived ? '▾' : '▸'} Archived (${archived.length})</button>
+      ${showArchived ? `<div class="muted" style="font-size:12px;margin:6px 0">Hidden from the list and from members. Their attendance still counts.</div><div class="table-wrap"><table class="t"><tbody>
+        ${archived.map(e => `<tr><td><a href="#/board/${e.id}"><b>${esc(e.title)}</b></a></td><td class="muted">${esc(fmtWhen(e.when))}</td>
+          <td style="text-align:right"><button class="btn sm" data-unarchive="${e.id}">Unarchive</button></td></tr>`).join('')}</tbody></table></div>` : ''}</div>` : ''}
+    ${deleted.length ? `<div style="margin-top:22px"><button class="btn ghost" id="toggleDeleted">${showDeleted ? '▾' : '▸'} Recently deleted (${deleted.length})</button>
+      ${showDeleted ? `<div class="muted" style="font-size:12px;margin:6px 0">Kept for ${TRASH_DAYS} days with their lineup and attendance, then removed for good. Their attendance still counts until then.</div><div class="table-wrap"><table class="t"><tbody>
+        ${deleted.map(e => `<tr><td><b>${esc(e.title)}</b><div class="muted" style="font-size:12px">${esc(fmtWhen(e.when))}</div></td>
+          <td class="muted" style="font-size:12px">Deleted ${esc(new Date(e.deletedAt).toLocaleDateString())}${e.deletedBy ? ` by ${esc(e.deletedBy)}` : ''} · removed in ${trashDaysLeft(e)} day${trashDaysLeft(e) === 1 ? '' : 's'}</td>
+          <td style="text-align:right;white-space:nowrap"><button class="btn sm primary" data-restore="${e.id}">Restore</button> <button class="btn sm ghost danger" data-forever="${e.id}">Delete forever</button></td></tr>`).join('')}</tbody></table></div>` : ''}</div>` : ''}`;
   $('#newEv').onclick = () => eventDialog();
+  if ($('#toggleArchived')) $('#toggleArchived').onclick = () => { showArchived = !showArchived; render(); };
+  if ($('#toggleDeleted')) $('#toggleDeleted').onclick = () => { showDeleted = !showDeleted; render(); };
+  $$('[data-unarchive]').forEach(b => (b.onclick = () => { const e = eventById(b.dataset.unarchive); delete e.archived; commit(); toast(`“${e.title}” is back in the list`); }));
+  $$('[data-restore]').forEach(b => (b.onclick = () => restoreEvent(eventById(b.dataset.restore))));
+  $$('[data-forever]').forEach(b => (b.onclick = async () => {
+    const e = eventById(b.dataset.forever);
+    if (!(await confirmBox(`Delete “${e.title}” for good? Its lineup and attendance are gone and can't be restored. Strikes it gave stay.`, 'Delete forever'))) return;
+    S.events = S.events.filter(x => x !== e); commit(); toast('Deleted for good');
+  }));
   $('#impEvCsv').onclick = () => lineupCsvDialog();
 };
 
@@ -512,7 +559,15 @@ let benchFilter = { q: '', role: 'all', group: '' };
 routes.board = (v, id) => {
   const ev = eventById(id);
   if (!ev) { v.innerHTML = `<div class="empty-state"><h3>Event not found</h3><a class="btn" href="#/events">Back to events</a></div>`; return; }
+  if (ev.deletedAt) {
+    renderBoard(v, ev, true, { banner: `This event is in Recently deleted (removed for good in ${trashDaysLeft(ev)} days). Restore it to edit.`, noAsk: true });
+    v.insertAdjacentHTML('afterbegin', `<div class="row" style="margin-bottom:10px"><a class="btn ghost" href="#/events">← Events</a><button class="btn primary" id="restoreHere">Restore this event</button></div>`);
+    $('#restoreHere').onclick = () => restoreEvent(ev);
+    return;
+  }
   renderBoard(v, ev, false);
+  if (ev.archived) v.insertAdjacentHTML('afterbegin', `<div class="share-banner">This event is archived: hidden from the list and from members. <button class="btn sm" id="unarchiveHere">Unarchive</button></div>`);
+  if ($('#unarchiveHere')) $('#unarchiveHere').onclick = () => { delete ev.archived; commit(); };
 };
 
 function renderBoard(v, ev, readOnly, ctx = {}) {
@@ -555,7 +610,7 @@ function renderBoard(v, ev, readOnly, ctx = {}) {
   const roleCount = (role) => [...placed].filter(id => mm[id] && roleFn(mm[id]) === role).length;
 
   v.innerHTML = `
-    ${readOnly ? `<div class="share-banner">${ctx.banner || `Read-only lineup shared from <b>${esc(ctx.guild || S.guild.name)}</b>.`} Ask an officer for changes.</div>` : ''}
+    ${readOnly ? `<div class="share-banner">${ctx.banner || `Read-only lineup shared from <b>${esc(ctx.guild || S.guild.name)}</b>.`}${ctx.noAsk ? '' : ' Ask an officer for changes.'}</div>` : ''}
     <div class="head">
       <div><h1>${esc(ev.title)}</h1>
         <div class="sub">${esc(md ? md.label : ev.mode)} · ${esc(fmtWhen(ev.when))} · <span class="mono">${st.filled}/${st.total}</span> filled ·
@@ -825,7 +880,8 @@ function moreDialog(ev) {
       <button class="btn" id="txt">Copy as text</button>
       <button class="btn" onclick="print()">Print</button>
     </div>
-    <div class="row"><button class="btn danger" id="del">Delete event</button></div>
+    <div class="row"><button class="btn" id="arch">${ev.archived ? 'Unarchive' : 'Archive'}</button><button class="btn danger" id="del">Delete event</button></div>
+    <div class="muted" style="font-size:12px">Archive hides the event but keeps it. Delete moves it to Recently deleted for ${TRASH_DAYS} days, where it can be restored.</div>
     <div class="actions"><button class="btn" data-close>Close</button></div>`,
   { onMount: (el, close) => {
     $('#edit', el).onclick = () => { close(); eventDialog(ev); };
@@ -839,7 +895,13 @@ function moreDialog(ev) {
     if ($('#unshare', el)) $('#unshare', el).onclick = () => { ev.shareToken = null; close(); commit(); };
     $('#csv', el).onclick = () => { download(`${ev.title.replace(/[^\w\- ]+/g, '').trim() || 'lineup'}.csv`, lineupCsv(ev), 'text/csv'); };
     $('#txt', el).onclick = async () => { try { await navigator.clipboard.writeText(lineupText(ev)); toast('Lineup copied'); } catch { download('lineup.txt', lineupText(ev), 'text/plain'); } };
-    $('#del', el).onclick = async () => { close(); if (await confirmBox(`Delete “${ev.title}” and its attendance?`)) { S.events = S.events.filter(x => x !== ev); persist(); location.hash = '#/events'; } };
+    $('#del', el).onclick = async () => { close(); if (await confirmBox(`Delete “${ev.title}”? It goes to Recently deleted for ${TRASH_DAYS} days, where it can be restored.`, 'Delete')) trashEvent(ev); };
+    $('#arch', el).onclick = () => {
+      close();
+      if (ev.archived) { delete ev.archived; commit(); toast(`“${ev.title}” is back in the list`); return; }
+      ev.archived = true; persist(); location.hash = '#/events';
+      toastAction(`“${ev.title}” archived`, 'Undo', () => { delete ev.archived; commit(); });
+    };
   } });
 }
 
@@ -1172,7 +1234,7 @@ routes.attendance = (v, eventId) => {
   const rows = S.members.filter(m => att[m.id]).sort((a, b) => att[a.id].rate - att[b.id].rate || att[b.id].absent - att[a.id].absent);
   v.innerHTML = `
     <div class="head"><div><h1>Attendance</h1><div class="sub">${taken.length} events with attendance taken</div></div>
-      <div class="row"><select id="pick"><option value="">Take attendance for…</option>${[...S.events].sort((a, b) => String(b.when).localeCompare(String(a.when))).map(e => `<option value="${e.id}">${esc(e.title)}</option>`).join('')}</select></div></div>
+      <div class="row"><select id="pick"><option value="">Take attendance for…</option>${S.events.filter(e => !e.deletedAt).sort((a, b) => String(b.when).localeCompare(String(a.when))).map(e => `<option value="${e.id}">${esc(e.title)}</option>`).join('')}</select></div></div>
     ${rows.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Member</th><th>Job</th><th class="num">Present</th><th class="num">Late</th><th class="num">Absent</th><th class="num">Rate</th><th></th><th class="num">Strikes</th></tr></thead><tbody>
       ${rows.map(m => { const a = att[m.id]; return `<tr><td><b>${esc(m.name)}</b></td><td>${esc(pretty(m.job))}</td><td class="num">${a.present}</td><td class="num">${a.late}</td><td class="num">${a.absent}</td>
         <td class="num">${Math.round(a.rate * 100)}%</td><td><div class="bar"><i style="width:${Math.round(a.rate * 100)}%;${a.rate < .5 ? 'background:var(--danger)' : a.rate < .8 ? 'background:var(--warn)' : ''}"></i></div></td><td class="num">${strikeCount(m.id) || ''}</td></tr>`; }).join('')}
@@ -2056,6 +2118,7 @@ async function bootShare(token) {
   if (window.RONW_SHARE) return bootShare(window.RONW_SHARE);
   if (!(await load())) return;
   appReady = true;
+  if (purgeOldDeleted()) persist();
   render();
   if (mode === 'server') {
     startLive('/api/live', (d) => { if (d.rev > rev) whenIdle(refreshFromServer); });

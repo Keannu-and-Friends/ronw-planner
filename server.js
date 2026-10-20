@@ -155,7 +155,7 @@ function findShare(token) {
   for (const g of readDb().guilds) {
     const s = readState(g.id); if (!s) continue;
     if (s.auction && s.auction.shareToken === token) return { gid: g.id, s, auction: true };
-    const ev = (s.events || []).find(e => e.shareToken && e.shareToken === token);
+    const ev = (s.events || []).find(e => e.shareToken && e.shareToken === token && !e.deletedAt);
     if (ev) return { gid: g.id, s, ev };
   }
   return null;
@@ -555,7 +555,7 @@ async function handleApi(req, res, p) {
   if (p === '/api/member/view' && req.method === 'GET') {
     const s = readState(g.id) || {};
     const myId = ctx.person.memberId; const ids = new Set(myId ? [myId] : []);
-    const events = (s.events || []).map(ev => { ev.fields.forEach(f => f.parties.forEach(pt => pt.slots.forEach(id => id && ids.add(id)))); return { ...ev, attendance: undefined, shareToken: undefined }; });
+    const events = (s.events || []).filter(ev => !ev.deletedAt && !ev.archived).map(ev => { ev.fields.forEach(f => f.parties.forEach(pt => pt.slots.forEach(id => id && ids.add(id)))); return { ...ev, attendance: undefined, shareToken: undefined }; });
     const members = (s.members || []).filter(m => ids.has(m.id)).map(({ id, name, job, level, gs }) => ({ id, name, job, level, gs }));
     const a = s.auction || {};
     const meRoster = (s.members || []).find(m => m.id === myId) || null;
