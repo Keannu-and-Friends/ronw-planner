@@ -33,7 +33,7 @@ To change the port or how it's exposed, copy `.env.example` to `.env` and edit i
 
 - **Update**: `git pull`, then `docker compose up -d --build`.
 - **Logs**: `docker compose logs -f`
-- **Account commands**: `docker compose exec -u node app node server.js reset-password <name>` (also `add-user`, `make-leader`, `make-admin`).
+- **Account commands**: `docker compose exec -u node app node server.js reset-password <name>` (also `add-user`, `make-leader`, `make-admin`, `delete-user`).
 - **Bring existing data in**: stop it (`docker compose down`), copy `users.json` and the `guilds/` folder into `data/`, then start it again. The container fixes the files' owner on start.
 - **Back up the data**: copy the `data/` folder somewhere safe.
 
@@ -101,7 +101,8 @@ These steps are for a Linux server you control (a VPS or a home server) with a d
 - **Member**: sees the lineups and reservation lists, and signs up for reservations under the roster name an officer linked to their account.
 - Settings → Guild members shows the invite link, everyone's role, and who's linked to which roster name.
 - Each guild only sees its own data. Passwords are stored hashed in `users.json`, and logins last 30 days.
-- Commands to run on the server: `node server.js add-user <name>`, `node server.js reset-password <name>`, `node server.js make-leader <name> <guild>` and `node server.js make-admin <name>`.
+- **Deleting accounts**: anyone can delete their own account under **My account** (Settings, or the member bar), after typing their password. The site admin can delete any other account in **Settings → Site → Accounts**. Deleting removes the login, signs it out everywhere and takes it out of its guild. The guild's data and the person's roster name stay. A guild's only leader has to make someone else leader first, and the last site admin can't be deleted.
+- Commands to run on the server: `node server.js add-user <name>`, `node server.js reset-password <name>`, `node server.js make-leader <name> <guild>`, `node server.js make-admin <name>` and `node server.js delete-user <name>`.
 
 ## What's in it
 

@@ -150,6 +150,29 @@ function addUser(d, username, password) {
   d.users.push(user);
   return user;
 }
+// Deleting an account removes the login, its sessions and its place in a guild. Guild data and roster entries stay.
+// Returns an error message when it isn't allowed.
+function accountDeleteProblem(d, username) {
+  const user = findUser(d, username); if (!user) return 'No such account.';
+  if (user.admin && d.users.filter(u => u.admin).length === 1) return 'This is the only site admin account. Make another admin first (node server.js make-admin <name>).';
+  for (const g of guildsOf(d, user.username)) {
+    const p = personIn(g, user.username);
+    if (p.role === 'leader' && g.people.length > 1 && g.people.filter(x => x.role === 'leader').length === 1) return `${user.username} is the only leader of ${g.name}. Make someone else leader first.`;
+  }
+  return null;
+}
+function deleteAccount(d, username) {
+  const user = findUser(d, username);
+  const emptied = [];
+  d.guilds.forEach(g => {
+    if (!personIn(g, user.username)) return;
+    g.people = g.people.filter(p => !same(p.username, user.username));
+    if (!g.people.length) emptied.push(g.name);
+  });
+  Object.keys(d.sessions).forEach(k => { if (same(d.sessions[k].user, user.username)) delete d.sessions[k]; });
+  d.users = d.users.filter(u => u !== user);
+  return { emptied };
+}
 function createGuild(d, name, leader) {
   let id; do { id = 'g' + crypto.randomBytes(5).toString('hex'); } while (d.guilds.some(g => g.id === id));
   const g = { id, name: String(name).trim().slice(0, 60) || 'My Guild', createdAt: new Date().toISOString(), invite: newInvite(), people: leader ? [{ username: leader, role: 'leader', memberId: null }] : [] };
@@ -279,6 +302,14 @@ async function handleApi(req, res, p) {
   if (!ctx) return send(res, 401, { error: 'login required' });
   const { d } = ctx;
 
+  if (p === '/api/account/delete' && req.method === 'POST') {
+    const b = await readJson(req); const user = findUser(d, ctx.username);
+    if (!checkPassword(user, b.password || '')) return send(res, 400, { error: 'That password is wrong.' });
+    const problem = accountDeleteProblem(d, ctx.username); if (problem) return send(res, 400, { error: problem });
+    deleteAccount(d, ctx.username); writeDb(d);
+    res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+    return send(res, 200, { ok: true });
+  }
   if (p === '/api/password' && req.method === 'POST') {
     const b = await readJson(req); const user = findUser(d, ctx.username);
     if (!checkPassword(user, b.current || '')) return send(res, 400, { error: 'Your current password is wrong.' });
@@ -330,6 +361,19 @@ async function handleApi(req, res, p) {
     if (p === '/api/site/start' && req.method === 'POST') {
       const st = { code: 's' + newInvite(), exp: Date.now() + START_DAYS * 864e5 }; d.starts.push(st); writeDb(d);
       return send(res, 200, { ok: true, ...st });
+    }
+    if (p === '/api/site/accounts' && req.method === 'GET') {
+      return send(res, 200, { me: ctx.username, accounts: d.users.map(u => {
+        const g = guildsOf(d, u.username)[0];
+        return { username: u.username, admin: !!u.admin, createdAt: u.createdAt || null, guild: g ? g.name : null, role: g ? personIn(g, u.username).role : null };
+      }) });
+    }
+    if (p === '/api/site/accounts/delete' && req.method === 'POST') {
+      const b = await readJson(req);
+      if (same(b.username, ctx.username)) return send(res, 400, { error: 'To delete your own account, use My account.' });
+      const problem = accountDeleteProblem(d, b.username); if (problem) return send(res, 400, { error: problem });
+      const r = deleteAccount(d, b.username); writeDb(d);
+      return send(res, 200, { ok: true, emptied: r.emptied });
     }
     if (p === '/api/site/start/revoke' && req.method === 'POST') { const b = await readJson(req); d.starts = d.starts.filter(x => x.code !== b.code); writeDb(d); return send(res, 200, { ok: true }); }
   }
@@ -528,10 +572,16 @@ function moveOldData() {
   console.log(`  Moved data.json into guild "${g.name}" (${path.join('guilds', g.id)}).`);
 }
 
-// Command line: add-user <name> | reset-password <name> | make-leader <name> <guild name or id> | make-admin <name>
+// Command line: add-user <name> | reset-password <name> | make-leader <name> <guild name or id> | make-admin <name> | delete-user <name>
 async function cli(cmd, name, guildArg) {
   const d = readDb();
   if (!name || (cmd === 'make-leader' && !guildArg)) { console.log(`Usage: node server.js ${cmd} <username>${cmd === 'make-leader' ? ' <guild name or id>' : ''}`); process.exit(1); }
+  if (cmd === 'delete-user') {
+    const problem = accountDeleteProblem(d, name); if (problem) { console.log(problem); process.exit(1); }
+    const shown = findUser(d, name).username; const r = deleteAccount(d, name); writeDb(d);
+    console.log(`Deleted ${shown}.${r.emptied.length ? ` ${r.emptied.join(', ')} now has no one in it; its data is kept, and make-leader can give it a new leader.` : ''}`);
+    return;
+  }
   if (cmd === 'make-admin') {
     const user = findUser(d, name); if (!user) { console.log(`No account named "${name}".`); process.exit(1); }
     user.admin = true; writeDb(d); console.log(`${user.username} is now a site admin.`); return;
@@ -567,7 +617,7 @@ async function cli(cmd, name, guildArg) {
 }
 
 const [cmd, arg, arg2] = process.argv.slice(2);
-if (['add-user', 'reset-password', 'make-leader', 'make-admin'].includes(cmd)) cli(cmd, arg, arg2);
+if (['add-user', 'reset-password', 'make-leader', 'make-admin', 'delete-user'].includes(cmd)) cli(cmd, arg, arg2);
 else {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   moveOldData();

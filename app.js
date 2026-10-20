@@ -1194,7 +1194,7 @@ routes.settings = (v) => {
         <div class="row"><input type="text" id="newJob" placeholder="Add a job (e.g. Soul Linker)"><button class="btn sm" id="addJob">Add</button></div>
       </div>
       ${mode === 'server' ? `<div class="card pad" style="display:grid;gap:12px">
-        <div class="row"><b style="font:600 16px var(--serif)">Guild members</b><span class="grow"></span><button class="btn sm" id="myPw">Change my password</button></div>
+        <div class="row"><b style="font:600 16px var(--serif)">Guild members</b><span class="grow"></span><button class="btn sm" id="myPw">My account</button></div>
         <div class="muted" style="font-size:12px"><b>Guild Leader</b>: everything, plus roles and removing people. <b>Officer</b>: edits roster, events, attendance and auction. <b>Member</b>: sees lineups and their own reservations, and can sign up when self sign-up is on.</div>
         <div id="people" class="muted">Loading…</div>
       </div>` : ''}
@@ -1299,25 +1299,69 @@ async function sitePanel() {
     <label class="check"><input type="checkbox" id="io" ${r.inviteOnly ? 'checked' : ''}> Invite only: people can only sign up with a guild invite link or a new-guild link</label>
     <div class="row"><b style="font-size:13px">New-guild links</b><span class="muted" style="font-size:12px">Each one lets one person start one guild. They expire after 7 days.</span><span class="grow"></span><button class="btn sm" id="mkStart">+ new-guild link</button></div>
     ${r.starts.map(st => `<div class="row" style="font-size:13px"><input type="text" readonly value="${esc(url(st.code))}" style="flex:1;min-width:220px" onclick="this.select()">
-      <span class="muted" style="font-size:12px">until ${esc(new Date(st.exp).toLocaleDateString())}</span><button class="btn sm" data-cp="${esc(st.code)}">Copy</button><button class="btn sm ghost danger" data-rv="${esc(st.code)}">Cancel</button></div>`).join('') || '<div class="muted" style="font-size:12px">No open links.</div>'}`;
+      <span class="muted" style="font-size:12px">until ${esc(new Date(st.exp).toLocaleDateString())}</span><button class="btn sm" data-cp="${esc(st.code)}">Copy</button><button class="btn sm ghost danger" data-rv="${esc(st.code)}">Cancel</button></div>`).join('') || '<div class="muted" style="font-size:12px">No open links.</div>'}
+    <div class="row" style="margin-top:6px"><b style="font-size:13px">Accounts</b><span class="muted" style="font-size:12px">Deleting removes the login and its place in a guild. Guild data and roster names stay.</span></div>
+    <div id="accounts" class="muted" style="font-size:13px">Loading…</div>`;
+  accountsList();
   $('#io', box).onchange = async (e) => { const x = await api('/api/site', 'POST', { inviteOnly: e.target.checked }); toast(x.ok ? (e.target.checked ? 'Sign-up is now invite only' : 'Anyone can sign up and start a guild now') : x.error); sitePanel(); };
   $('#mkStart', box).onclick = async () => { const x = await api('/api/site/start', 'POST'); if (!x.ok) return toast(x.error); try { await navigator.clipboard.writeText(url(x.code)); toast('New-guild link copied'); } catch { toast('New-guild link made'); } sitePanel(); };
   $$('[data-cp]', box).forEach(b => (b.onclick = async () => { try { await navigator.clipboard.writeText(url(b.dataset.cp)); toast('Copied'); } catch { toast('Select the link and copy it'); } }));
   $$('[data-rv]', box).forEach(b => (b.onclick = async () => { await api('/api/site/start/revoke', 'POST', { code: b.dataset.rv }); sitePanel(); }));
 }
+async function accountsList() {
+  const box = $('#accounts'); if (!box) return;
+  const r = await api('/api/site/accounts');
+  if (!r.ok) { box.textContent = r.error || 'Could not load accounts.'; return; }
+  box.classList.remove('muted');
+  const accounts = [...r.accounts].sort((a, b) => a.username.localeCompare(b.username));
+  box.innerHTML = `<div class="table-wrap"><table class="t"><thead><tr><th>Account</th><th>Guild</th><th>Role</th><th>Since</th><th></th></tr></thead><tbody>
+    ${accounts.map(a => `<tr><td><b>${esc(a.username)}</b>${a.admin ? ' <span class="pill">admin</span>' : ''}${a.username === r.me ? ' <span class="pill">you</span>' : ''}</td>
+      <td>${a.guild ? esc(a.guild) : '<span class="muted">none</span>'}</td><td>${a.role ? ROLE_LABEL[a.role] : '—'}</td>
+      <td class="mono">${esc(String(a.createdAt || '').slice(0, 10))}</td>
+      <td style="text-align:right">${a.username === r.me ? '' : `<button class="btn sm ghost danger" data-delacct="${esc(a.username)}">Delete</button>`}</td></tr>`).join('')}
+  </tbody></table></div>`;
+  $$('[data-delacct]', box).forEach(b => (b.onclick = async () => {
+    const name = b.dataset.delacct;
+    if (!(await confirmBox(`Delete the account “${name}”? They're logged out everywhere and can't log in again. Their guild's data and roster name stay.`, 'Delete account'))) return;
+    const x = await api('/api/site/accounts/delete', 'POST', { username: name });
+    if (!x.ok) return toast(x.error || 'Could not delete it', 4500);
+    toast(`Deleted ${name}${x.emptied && x.emptied.length ? ` · ${x.emptied.join(', ')} now has no one in it` : ''}`, 4500);
+    sitePanel(); guildPanel();
+  }));
+}
+// My account: change password, or delete the account (needs the password).
 function passwordDialog() {
-  openModal(`<h2>Change my password</h2>
+  openModal(`<h2>My account</h2>
+    <b style="font-size:13px">Change password</b>
     <label class="field">Current password<input type="password" id="cp" autocomplete="current-password"></label>
     <label class="field">New password (at least 8 characters)<input type="password" id="np1" autocomplete="new-password"></label>
     <label class="field">New password again<input type="password" id="np2" autocomplete="new-password"></label>
     <div class="muted" id="pmsg" style="font-size:13px"></div>
-    <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="pgo">Change</button></div>`,
+    <div class="row"><span class="grow"></span><button class="btn primary" id="pgo">Change password</button></div>
+    <details style="border-top:1px solid var(--line);padding-top:10px"><summary style="cursor:pointer;color:var(--danger);font-size:13px">Delete my account</summary>
+      <div style="display:grid;gap:8px;margin-top:8px">
+        <div class="muted" style="font-size:12px">Your login is deleted and you're taken out of your guild. The guild's data and your roster name stay. A guild's only leader has to make someone else leader first.</div>
+        <label class="field">Type your password to confirm<input type="password" id="dpw" autocomplete="current-password"></label>
+        <div class="muted" id="dmsg" style="font-size:13px"></div>
+        <div class="row"><span class="grow"></span><button class="btn danger" id="dgo">Delete my account</button></div>
+      </div></details>
+    <div class="actions"><button class="btn" data-close>Close</button></div>`,
   { onMount: (el, close) => {
     $('#pgo', el).onclick = async () => {
       if ($('#np1', el).value !== $('#np2', el).value) { $('#pmsg', el).textContent = 'The new passwords don’t match.'; return; }
       const x = await api('/api/password', 'POST', { current: $('#cp', el).value, next: $('#np1', el).value });
       if (!x.ok) { $('#pmsg', el).textContent = x.error || 'Could not change it'; return; }
       close(); toast('Password changed. Other devices were logged out.');
+    };
+    $('#dgo', el).onclick = async () => {
+      const msg = $('#dmsg', el); msg.style.color = 'var(--danger)';
+      const password = $('#dpw', el).value;
+      if (!password) { msg.textContent = 'Type your password first.'; return; }
+      // The confirm replaces this dialog, so errors after it show as a toast.
+      if (!(await confirmBox('Delete your account for good? This can’t be undone.', 'Delete my account'))) return;
+      const x = await api('/api/account/delete', 'POST', { password });
+      if (!x.ok) { toast(x.error || 'Could not delete it', 5000); return; }
+      goHome();
     };
   } });
 }
@@ -1673,7 +1717,7 @@ async function bootMember() {
     const [tab, id] = location.hash.replace(/^#\/?/, '').split('/');
     v.innerHTML = `<div class="member-bar card">${userBox()}<span class="grow"></span>
         <nav class="seg"><a href="#/lineups" class="${tab !== 'reservations' ? 'on' : ''}">Lineups</a><a href="#/reservations" class="${tab === 'reservations' ? 'on' : ''}">Reservations</a></nav>
-        <button class="btn sm ghost" id="myPw">Password</button></div>
+        <button class="btn sm ghost" id="myPw">My account</button></div>
       <div id="mview"></div>`;
     $('#logout', v).onclick = logout; $('#guildMenu', v).onclick = guildMenuDialog; $('#myPw', v).onclick = passwordDialog;
     const mv = $('#mview', v);
