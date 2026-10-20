@@ -244,8 +244,12 @@ function migrate(s) {
   return out;
 }
 
-const persist = debounce(async () => {
+// dirty = edits not saved yet. A live update from someone else never replaces those.
+let dirty = false, editSeq = 0;
+function persist() { dirty = true; editSeq++; persistNow(); }
+const persistNow = debounce(async () => {
   if (mode === 'server') {
+    const seq = editSeq;
     try {
       setSaveState('Saving…');
       const r = await fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: S, baseRev: rev }) });
@@ -253,10 +257,11 @@ const persist = debounce(async () => {
       if (r.status === 401) { setSaveState('Logged out — not saved', true); reauth(); return; }
       if (!r.ok) throw new Error(r.status);
       const j = await r.json(); rev = j.rev; setSaveState('Saved to the server');
+      if (seq === editSeq) dirty = false;
       if (j.added?.length || j.edited?.length || j.gone?.length) adoptMemberChanges(j);
     } catch { setSaveState('Save failed — is the server running?', true); try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch {} }
   } else {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(S)); setSaveState('Saved in this browser'); }
+    try { localStorage.setItem(LS_KEY, JSON.stringify(S)); setSaveState('Saved in this browser'); dirty = false; }
     catch { setSaveState('Could not save', true); }
   }
 }, 350);
@@ -278,15 +283,42 @@ function adoptMemberChanges({ added = [], edited = [], gone = [] }) {
   else if (fresh.length) notes.unshift(`${fresh.length} new reservations from members`);
   if (!notes.length) return;
   toast(notes.join(' · '), 3500);
-  const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
-  if (route().name === 'auction' && $('#modal').hidden && !typing) render();
+  if (route().name === 'auction') render();
 }
-async function pollSelfAdds() {
-  if (mode !== 'server' || document.hidden) return;
+// ---------- live updates ----------
+// The server sends a tiny "changed" signal when this guild's data is saved; the page then fetches what changed.
+function startLive(url, onChange) {
+  if (!window.EventSource) return null;
+  const es = new EventSource(url); // reconnects by itself if the connection drops
+  es.onmessage = (e) => { let d; try { d = JSON.parse(e.data); } catch { return; } onChange(d); };
+  return es;
+}
+// Waits until the person isn't typing, in a dialog or dragging, so an update never eats their input.
+// The focused box (if any) gets its focus back after the page redraws.
+function busyNow() {
+  const a = document.activeElement;
+  return !$('#modal').hidden || !!document.querySelector('.dragging')
+    || (!!a && /INPUT|TEXTAREA|SELECT/.test(a.tagName) && !['checkbox', 'radio'].includes(a.type) && String(a.value || '').length > 0);
+}
+function whenIdle(fn) {
+  clearTimeout(whenIdle.t);
+  if (busyNow()) { whenIdle.t = setTimeout(() => whenIdle(fn), 1200); return; }
+  const focusId = document.activeElement && document.activeElement.id;
+  Promise.resolve(fn()).then(() => { const el = focusId && document.getElementById(focusId); if (el && document.activeElement !== el) el.focus(); });
+}
+// Officer pages: take members' own reservation changes, or another officer's saved changes when we have none of our own.
+async function refreshFromServer() {
+  if (mode !== 'server' || !appReady) return;
   try {
     const j = await (await fetch('/api/state', { cache: 'no-store' })).json();
-    // Only take it when nothing but members' own reservation changes happened since our copy.
-    if (!j.state || j.rev <= rev || (j.state._officerRev ?? Infinity) > rev) return;
+    if (!j.state || j.rev <= rev) return;
+    if ((j.state._officerRev ?? Infinity) > rev) {
+      // Another officer saved. Keep our unsaved edits; the next save reports the conflict as before.
+      if (dirty) return;
+      S = migrate(j.state); rev = j.rev;
+      render();
+      return;
+    }
     const base = rev; rev = j.rev;
     const ca = j.state.auction || {};
     const mine = new Map(S.auction.entries.map(e => [e.id, e]));
@@ -1813,20 +1845,25 @@ async function bootMember() {
   };
   draw(d);
   window.onhashchange = async () => { const r = await api('/api/member/view'); draw(r.ok ? r : d); };
+  startLive('/api/live', () => whenIdle(async () => { const r = await api('/api/member/view'); if (r.ok) draw(r); }));
 }
 
 // ---------- share view ----------
 async function bootShare(token) {
   document.body.classList.add('share');
-  try {
-    const r = await fetch(`/api/share/${encodeURIComponent(token)}`); if (!r.ok) throw 0;
-    const d = await r.json();
+  const t = encodeURIComponent(token);
+  const show = (d) => {
     if (d.auction) { document.title = `Reservations · ${d.guild.name}`; return renderAuctionShare($('#view'), d); }
     const mm = Object.fromEntries(d.members.map(m => [m.id, m]));
     const rf = (m) => (m && d.roles[m.job]) || 'dps';
     document.title = `${d.event.title} · ${d.guild.name}`;
     S.partySize = d.event.fields[0]?.parties[0]?.slots.length || 5;
     renderBoard($('#view'), d.event, true, { mm, roleOf: rf, guild: d.guild.name, mode: null });
+  };
+  try {
+    const r = await fetch(`/api/share/${t}`); if (!r.ok) throw 0;
+    show(await r.json());
+    startLive(`/api/share/${t}/live`, () => whenIdle(async () => { const x = await fetch(`/api/share/${t}`, { cache: 'no-store' }); if (x.ok) show(await x.json()); }));
   } catch { $('#view').innerHTML = '<div class="empty-state"><h3>This link isn\'t available</h3>It may have been turned off, or the organizer\'s computer is offline.</div>'; }
 }
 
@@ -1836,6 +1873,9 @@ async function bootShare(token) {
   if (!(await load())) return;
   appReady = true;
   render();
-  setInterval(pollSelfAdds, 20000);
+  if (mode === 'server') {
+    startLive('/api/live', (d) => { if (d.rev > rev) whenIdle(refreshFromServer); });
+    setInterval(() => { if (!document.hidden) whenIdle(refreshFromServer); }, 60000);
+  }
 })();
 })();

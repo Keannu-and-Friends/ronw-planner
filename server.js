@@ -47,6 +47,33 @@ function readState(gid) {
 function writeState(gid, obj) {
   fs.mkdirSync(path.join(GUILDS, gid), { recursive: true });
   writeJson(guildFile(gid), obj);
+  liveNotify(gid, obj._rev || 0);
+}
+
+// ---------- live updates ----------
+// Open pages keep one Server-Sent Events connection per guild. When the guild's data is saved, each one gets
+// a tiny "changed" signal with the new revision (never the data itself) and re-fetches what it's allowed to see.
+const live = new Map(); // guild id -> Set of open responses
+let liveCount = 0;
+const LIVE_MAX = 2000;
+function liveSubscribe(req, res, gid) {
+  if (liveCount >= LIVE_MAX) return send(res, 503, { error: 'Too many live connections. Refresh the page later.' });
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.write('retry: 3000\n\n');
+  if (!live.has(gid)) live.set(gid, new Set());
+  live.get(gid).add(res); liveCount++;
+  // A comment every 25 seconds keeps proxies from closing a quiet connection.
+  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => {
+    clearInterval(ping);
+    const set = live.get(gid); if (set && set.delete(res)) liveCount--;
+    if (set && !set.size) live.delete(gid);
+  });
+}
+function liveNotify(gid, rev) {
+  const set = live.get(gid); if (!set) return;
+  const msg = `data: ${JSON.stringify({ rev })}\n\n`;
+  for (const res of set) { try { res.write(msg); } catch { /* closed; cleaned up on 'close' */ } }
 }
 // Keep one backup per hour, newest 48, per guild.
 function backup(gid) {
@@ -496,6 +523,9 @@ async function handleApi(req, res, p) {
     return send(res, 405, { error: 'method not allowed' });
   }
 
+  // Live change signal for the active guild (any role).
+  if (p === '/api/live' && req.method === 'GET') return liveSubscribe(req, res, g.id);
+
   // What a member sees: lineups and reservation lists, plus their own linked roster name.
   if (p === '/api/member/view' && req.method === 'GET') {
     const s = readState(g.id) || {};
@@ -555,6 +585,14 @@ const server = http.createServer(async (req, res) => {
   }
   if (p.startsWith('/join/')) {
     return send(res, 200, pageWith(`window.RONW_JOIN=${JSON.stringify(p.slice(6))}`), TYPES['.html']);
+  }
+
+  // Live change signal for a share link's guild.
+  const shareLive = p.match(/^\/api\/share\/([^/]+)\/live$/);
+  if (shareLive && req.method === 'GET') {
+    const sh = findShare(shareLive[1]);
+    if (!sh) return send(res, 404, { error: 'not found' });
+    return liveSubscribe(req, res, sh.gid);
   }
 
   // Anyone with the share link adds themselves to a reservation list (only when the officer allowed it).
