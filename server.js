@@ -228,6 +228,17 @@ function deleteAccount(d, username) {
   d.users = d.users.filter(u => u !== user);
   return { emptied };
 }
+// Roster names a person in this guild could claim as theirs: active, and not linked to another account.
+function freeRosterNames(g, s, except = null) {
+  const taken = new Set(g.people.filter(p => p !== except && p.memberId).map(p => p.memberId));
+  return (s.members || []).filter(m => m.active !== false && m.name && !taken.has(m.id));
+}
+// On joining: link the account to the roster name that matches its username exactly (ignoring capitals), if free.
+function autoLink(g, person) {
+  const s = readState(g.id); if (!s || person.memberId) return;
+  const m = freeRosterNames(g, s, person).find(x => same(x.name, person.username));
+  if (m) { person.memberId = m.id; person.linkedBy = 'auto'; }
+}
 function createGuild(d, name, leader) {
   let id; do { id = 'g' + crypto.randomBytes(5).toString('hex'); } while (d.guilds.some(g => g.id === id));
   const g = { id, name: String(name).trim().slice(0, 60) || 'My Guild', createdAt: new Date().toISOString(), invite: newInvite(), people: leader ? [{ username: leader, role: 'leader', memberId: null }] : [] };
@@ -322,7 +333,7 @@ async function handleApi(req, res, p) {
     if (err) return send(res, 400, { error: err });
     const username = b.username.trim();
     const user = addUser(d, username, b.password); note('signup', ip, 3600e3);
-    if (joinTo) joinTo.people.push({ username, role: 'member', memberId: null });
+    if (joinTo) { const person = { username, role: 'member', memberId: null }; joinTo.people.push(person); autoLink(joinTo, person); }
     else if (start) { user.canCreateGuild = true; d.starts = d.starts.filter(x => x !== start); }
     // Data moved over from before guilds existed goes to the first account made on the server's own computer.
     const orphan = !joinTo && isDirectLocal(req) && d.guilds.find(g => g.unclaimed);
@@ -396,7 +407,7 @@ async function handleApi(req, res, p) {
     if (!personIn(g, ctx.username)) {
       const cur = guildsOf(d, ctx.username)[0];
       if (cur) return send(res, 400, { error: `You are already in ${cur.name}. One account can only be in one guild, so leave it first (Settings → Guild members).` });
-      g.people.push({ username: ctx.username, role: 'member', memberId: null });
+      const person = { username: ctx.username, role: 'member', memberId: null }; g.people.push(person); autoLink(g, person);
     }
     ctx.session.guild = g.id; writeDb(d);
     return send(res, 200, { ok: true, guild: g.name });
@@ -462,7 +473,7 @@ async function handleApi(req, res, p) {
     const s = readState(g.id) || {};
     if (b.memberId && !(s.members || []).some(m => m.id === b.memberId)) return send(res, 400, { error: 'No such roster member.' });
     if (b.memberId) { const taken = g.people.find(x => x !== target && x.memberId === b.memberId); if (taken) return send(res, 400, { error: `That roster member is already linked to ${taken.username}.` }); }
-    target.memberId = b.memberId || null; writeDb(d);
+    target.memberId = b.memberId || null; target.linkedBy = b.memberId ? 'officer' : undefined; writeDb(d);
     return send(res, 200, { ok: true });
   }
   if (p === '/api/guild/remove' && req.method === 'POST') {
@@ -521,6 +532,20 @@ async function handleApi(req, res, p) {
       }
     }
     return send(res, 405, { error: 'method not allowed' });
+  }
+
+  // Anyone in the guild links their own account to a roster name nobody else has claimed, or clears it.
+  if (p === '/api/me/roster' && req.method === 'GET') {
+    const s = readState(g.id) || {};
+    return send(res, 200, { linked: ctx.person.memberId || null, choices: freeRosterNames(g, s, ctx.person).map(({ id, name, job }) => ({ id, name, job })).sort((x, y) => x.name.localeCompare(y.name)) });
+  }
+  if (p === '/api/me/roster' && req.method === 'POST') {
+    const b = await readJson(req); const s = readState(g.id) || {};
+    if (!b.memberId) { ctx.person.memberId = null; delete ctx.person.linkedBy; writeDb(d); return send(res, 200, { ok: true }); }
+    const m = freeRosterNames(g, s, ctx.person).find(x => x.id === b.memberId);
+    if (!m) return send(res, 400, { error: 'That roster name is taken or no longer in the roster. Pick another, or ask an officer.' });
+    ctx.person.memberId = m.id; ctx.person.linkedBy = 'self'; writeDb(d);
+    return send(res, 200, { ok: true, name: m.name });
   }
 
   // Live change signal for the active guild (any role).

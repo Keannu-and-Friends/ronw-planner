@@ -100,7 +100,8 @@ These steps are for a Linux server you control (a VPS or a home server) with a d
 - **One account, one guild.** To move to another guild, leave the current one in Settings → Guild members, then open the new guild's invite link. The last leader has to hand over leadership before leaving, and the last person in a guild can't leave it.
 - **Guild Leader**: everything, plus changing roles, removing people, making a new invite link, restoring and erasing data.
 - **Officer**: edits the roster, events, attendance, strikes and auction.
-- **Member**: sees the lineups and reservation lists, and signs up for reservations under the roster name an officer linked to their account.
+- **Member**: sees the lineups and reservation lists, and signs up for reservations under the roster name linked to their account.
+- **Linking accounts to roster names**: when someone joins and their username matches a free roster name (ignoring capitals), they're linked automatically. Otherwise their pages show **Which roster name is yours?**, where they pick from the roster names nobody else has claimed, and **Change** lets them pick again later. Officers see each link in Settings → Guild members, marked "matched name" or "set by them", and can change or remove any of them.
 - Settings → Guild members shows the invite link, everyone's role, and who's linked to which roster name.
 - Each guild only sees its own data. Passwords are stored hashed in `users.json`, and logins last 30 days.
 - **Deleting accounts**: anyone can delete their own account under **My account** (Settings, or the member bar), after typing their password. The site admin can delete any other account in **Settings → Site → Accounts**. Deleting removes the login, signs it out everywhere and takes it out of its guild. The guild's data and the person's roster name stay. A guild's only leader has to make someone else leader first, and the last site admin can't be deleted.

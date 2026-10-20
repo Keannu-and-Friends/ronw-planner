@@ -1326,7 +1326,7 @@ async function guildPanel() {
       ${people.map(p => { const m = mm[p.memberId]; const self = p.username === r.me;
         return `<tr><td><b>${esc(p.username)}</b>${self ? ' <span class="pill">you</span>' : ''}</td>
           <td>${leader ? `<select data-role="${esc(p.username)}">${Object.keys(ROLE_LABEL).map(k => `<option value="${k}" ${p.role === k ? 'selected' : ''}>${ROLE_LABEL[k]}</option>`).join('')}</select>` : ROLE_LABEL[p.role]}</td>
-          <td><button class="btn sm ghost" data-link="${esc(p.username)}">${m ? `${esc(m.name)} · ${esc(pretty(m.job))}` : '<span style="color:var(--warn)">Link to roster…</span>'}</button></td>
+          <td><button class="btn sm ghost" data-link="${esc(p.username)}">${m ? `${esc(m.name)} · ${esc(pretty(m.job))}` : '<span style="color:var(--warn)">Link to roster…</span>'}</button>${m && p.linkedBy === 'self' ? ' <span class="pill" title="They picked this roster name themselves">set by them</span>' : ''}${m && p.linkedBy === 'auto' ? ' <span class="pill" title="Linked automatically because the username matches">matched name</span>' : ''}</td>
           <td style="text-align:right">${self ? '<button class="btn sm ghost" id="leave">Leave guild</button>' : leader ? `<button class="btn sm ghost danger" data-rm="${esc(p.username)}">Remove</button>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>`;
   $('#copyInv', box).onclick = async () => { try { await navigator.clipboard.writeText(inviteUrl); toast('Invite link copied'); } catch { toast('Select the link and copy it'); } };
@@ -1761,7 +1761,7 @@ function renderAuctionShare(v, d, opts = shareLinkOpts()) {
   const held = heldBy(startName);
   const mine = member ? A.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => x.e.mine)) : [];
   const who = (e) => `${e.inRoster ? '' : '@'}${esc(e.name)}${e.mine ? ' <span class="pill">you</span>' : ''}`;
-  v.innerHTML = `<div class="share-banner">${member ? '' : `Reservation lists from <b>${esc(d.guild.name)}</b>. `}${canAdd ? 'You can add yourself below, one spot per list. ' : ''}${member && !linked ? 'Ask an officer to link your account to your roster name so you can sign up. ' : ''}${linked && !A.selfAdd ? 'Signing yourself up is turned off by your officers. ' : ''}${linked ? 'You can edit or remove your own spots.' : 'Ask an officer to change or remove your spot.'}</div>
+  v.innerHTML = `<div class="share-banner">${member ? '' : `Reservation lists from <b>${esc(d.guild.name)}</b>. `}${canAdd ? 'You can add yourself below, one spot per list. ' : ''}${member && !linked ? 'Pick your roster name at the top of the page to sign up and manage your spots. ' : ''}${linked && !A.selfAdd ? 'Signing yourself up is turned off by your officers. ' : ''}${linked ? 'You can edit or remove your own spots.' : 'Ask an officer to change or remove your spot.'}</div>
     <div class="head"><div><h1>Reservations</h1></div></div>
     ${mine.length ? `<div class="card finder" style="margin-bottom:16px"><b>Your spots</b>
       ${mine.map(x => `<div class="hit"><div class="grow"><div style="color:var(--ink)">${esc(x.e.item || '—')}</div></div><span class="where">#${x.i + 1} in ${esc(x.c.name)}</span>
@@ -1832,6 +1832,33 @@ function shareLinkOpts() {
 }
 
 // ---------- member view (logged in, role Member) ----------
+// Members link their own account to a roster name that nobody else has claimed (officers can still change it).
+async function rosterLinkDialog(onDone) {
+  const r = await api('/api/me/roster'); if (!r.ok) return toast(r.error || 'Could not load the roster.');
+  openModal(`<h2>Which roster name is yours?</h2>
+    <p class="muted" style="margin:0">Only names nobody else has claimed are listed. Officers can see and change links.</p>
+    <label class="field">Your roster name<input type="text" id="rlName" placeholder="Search the roster"></label>
+    <div class="muted" id="rlMsg" style="font-size:13px;color:var(--danger)"></div>
+    <div class="actions">${r.linked ? '<button class="btn danger" id="rlClear" style="margin-right:auto">Unlink</button>' : ''}<button class="btn" data-close>Cancel</button><button class="btn primary" id="rlGo">This is me</button></div>`,
+  { onMount: (el, close) => {
+    let picked = null; const inp = $('#rlName', el);
+    if (!r.choices.length) $('#rlMsg', el).textContent = 'Every roster name is already claimed. Ask an officer to add you to the roster.';
+    nameCombo(inp, r.choices.map(m => ({ id: m.id, label: m.name, sub: pretty(m.job), keys: [m.name, m.job || ''] })), (it) => { picked = it; });
+    inp.addEventListener('input', () => { if (picked && inp.value.trim() !== picked.label) picked = null; });
+    const save = async (memberId) => {
+      const x = await api('/api/me/roster', 'POST', { memberId });
+      if (!x.ok) { $('#rlMsg', el).textContent = x.error || 'Could not save it.'; return; }
+      close(); toast(memberId ? `You're linked to ${x.name}` : 'Unlinked from the roster'); onDone();
+    };
+    $('#rlGo', el).onclick = () => {
+      if (!picked) { const hit = r.choices.find(m => normName(m.name) === normName(inp.value)); if (hit) picked = { id: hit.id }; }
+      if (!picked) { $('#rlMsg', el).textContent = 'Pick your name from the list.'; return; }
+      save(picked.id);
+    };
+    if ($('#rlClear', el)) $('#rlClear', el).onclick = () => save(null);
+    setTimeout(() => inp.focus(), 0);
+  } });
+}
 async function bootMember() {
   document.body.classList.add('share');
   const v = $('#view');
@@ -1842,8 +1869,12 @@ async function bootMember() {
     v.innerHTML = `<div class="member-bar card">${userBox()}<span class="grow"></span>
         <nav class="seg"><a href="#/lineups" class="${tab !== 'reservations' ? 'on' : ''}">Lineups</a><a href="#/reservations" class="${tab === 'reservations' ? 'on' : ''}">Reservations</a></nav>
         <button class="btn sm ghost" id="myPw">My account</button></div>
+      ${data.me ? '' : `<div class="card finder" style="margin-bottom:16px"><b>Which roster name is yours?</b>
+        <div class="muted" style="font-size:13px">Link your account to your name in the guild roster. Then your spots in lineups are highlighted and you can sign up for reservations.</div>
+        <div class="row"><button class="btn primary" id="pickMe">Pick my name</button></div></div>`}
       <div id="mview"></div>`;
     $('#logout', v).onclick = logout; $('#guildMenu', v).onclick = guildMenuDialog; $('#myPw', v).onclick = passwordDialog;
+    if ($('#pickMe', v)) $('#pickMe', v).onclick = () => rosterLinkDialog(reload);
     const mv = $('#mview', v);
     document.title = `${data.guild.name} · RONW Planner`;
     if (tab === 'reservations') {
@@ -1863,12 +1894,14 @@ async function bootMember() {
     }
     const mine = (e) => data.me && e.fields.some(f => f.parties.some(p => p.slots.includes(data.me.id)));
     const events = [...data.events].sort((a, b) => String(b.when || b.createdAt).localeCompare(String(a.when || a.createdAt)));
-    mv.innerHTML = `<div class="head"><div><h1>Lineups</h1><div class="sub">${data.me ? `You're <b>${esc(data.me.name)}</b> · ${esc(pretty(data.me.job))}` : 'Ask an officer to link your account to your roster name so your spots are highlighted.'}</div></div></div>
+    mv.innerHTML = `<div class="head"><div><h1>Lineups</h1><div class="sub">${data.me ? `You're <b>${esc(data.me.name)}</b> · ${esc(pretty(data.me.job))} <button class="btn sm ghost" id="changeMe" title="Pick a different roster name">Change</button>` : 'Pick your roster name above so your spots are highlighted.'}</div></div></div>
       ${events.length ? `<div class="grid-cards">${events.map(e => `<a class="card pad" href="#/lineups/${e.id}" style="text-decoration:none;display:grid;gap:4px">
           <b style="font:600 16px var(--serif)">${esc(e.title)}</b><span class="muted" style="font-size:12px">${esc(e.when || '')}</span>
           ${mine(e) ? '<span class="pill done" style="justify-self:start">You’re in this</span>' : ''}</a>`).join('')}</div>`
         : '<div class="empty-state"><h3>No lineups yet</h3>Your officers haven’t made any events.</div>'}`;
+    if ($('#changeMe', mv)) $('#changeMe', mv).onclick = () => rosterLinkDialog(reload);
   };
+  const reload = async () => { const r = await api('/api/member/view'); if (r.ok) draw(r); };
   draw(d);
   window.onhashchange = async () => { const r = await api('/api/member/view'); draw(r.ok ? r : d); };
   startLive('/api/live', () => whenIdle(async () => { const r = await api('/api/member/view'); if (r.ok) draw(r); }));
