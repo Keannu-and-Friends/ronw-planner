@@ -1,4 +1,4 @@
-/* Muster — local guild party planner. Plain JS, no build step. */
+/* RONW Planner — guild party planner. Plain JS, no build step. */
 (() => {
 'use strict';
 
@@ -75,7 +75,8 @@ const blankState = () => ({
 let S = blankState();
 let mode = 'local';      // 'server' | 'local'
 let rev = 0;
-const LS_KEY = 'muster.state.v1';
+const LS_KEY = 'ronw.state.v1';
+const OLD_LS_KEY = 'muster.state.v1'; // before the rename; read once, then saved under LS_KEY
 
 function setSaveState(text, err = false) { const el = $('#saveState'); if (el) { el.textContent = text; el.classList.toggle('err', err); } }
 
@@ -89,8 +90,8 @@ async function load() {
       const j = await r.json().catch(() => ({}));
       if (r.status === 401) { await showLogin(j); return false; }
       me = j;
-      if (window.MUSTER_JOIN) { await joinGuild(window.MUSTER_JOIN); return false; }
-      if (window.MUSTER_START) { await claimStart(window.MUSTER_START); return false; }
+      if (window.RONW_JOIN) { await joinGuild(window.RONW_JOIN); return false; }
+      if (window.RONW_START) { await claimStart(window.RONW_START); return false; }
       if (!me.active) { showNoGuild(); return false; }
       if (me.active.role === 'member') { await bootMember(); return false; }
       const st = await api('/api/state');
@@ -145,14 +146,14 @@ function wireLogin(root, signup, onDone, code = null) {
 }
 async function showLogin(info, tab) {
   document.body.classList.add('share');
-  const code = window.MUSTER_JOIN || window.MUSTER_START || null;
+  const code = window.RONW_JOIN || window.RONW_START || null;
   const link = code ? (showLogin.link = showLogin.link || await api(`/api/invite/${encodeURIComponent(code)}`)) : null;
   // Invite-only sites only offer sign-up through a valid invite or new-guild link.
   const canSignup = info.signup === 'open' || (link && link.ok);
   tab = tab || (link && link.ok ? 'signup' : 'login');
   if (!canSignup) tab = 'login';
   const v = $('#view');
-  v.innerHTML = `<div class="login card"><h1>Muster</h1>
+  v.innerHTML = `<div class="login card"><h1>RONW Planner</h1>
     ${link ? (link.ok ? `<div class="share-banner" style="margin:0">${link.kind === 'start' ? 'You’re invited to <b>start a new guild</b>.' : `You're invited to join <b>${esc(link.guild)}</b>.`} ${tab === 'signup' ? 'Make an account' : 'Log in or make an account'} to accept.</div>` : `<div class="share-banner" style="margin:0;color:var(--danger)">${esc(link.error)}</div>`) : ''}
     ${canSignup ? `<div class="seg"><button class="${tab === 'login' ? 'on' : ''}" data-tab="login">Log in</button><button class="${tab === 'signup' ? 'on' : ''}" data-tab="signup">Sign up</button></div>` : ''}
     ${loginForm(tab === 'signup')}
@@ -166,12 +167,12 @@ async function showLogin(info, tab) {
 }
 async function claimStart(code) {
   const r = await api('/api/start', 'POST', { code });
-  if (!r.ok) { document.body.classList.add('share'); $('#view').innerHTML = `<div class="login card"><h1>New-guild link</h1><p class="muted">${esc(r.error || 'Could not use this link.')}</p><button class="btn" onclick="location.href='/'">Go to Muster</button></div>`; return; }
+  if (!r.ok) { document.body.classList.add('share'); $('#view').innerHTML = `<div class="login card"><h1>New-guild link</h1><p class="muted">${esc(r.error || 'Could not use this link.')}</p><button class="btn" onclick="location.href='/'">Go to RONW Planner</button></div>`; return; }
   goHome();
 }
 async function joinGuild(code) {
   const r = await api('/api/join', 'POST', { code });
-  if (!r.ok) { document.body.classList.add('share'); $('#view').innerHTML = `<div class="login card"><h1>Invite link</h1><p class="muted">${esc(r.error || 'Could not join.')}</p><button class="btn" onclick="location.href='/'">Go to Muster</button></div>`; return; }
+  if (!r.ok) { document.body.classList.add('share'); $('#view').innerHTML = `<div class="login card"><h1>Invite link</h1><p class="muted">${esc(r.error || 'Could not join.')}</p><button class="btn" onclick="location.href='/'">Go to RONW Planner</button></div>`; return; }
   goHome();
 }
 function guildForms() {
@@ -230,7 +231,7 @@ function showUser() {
   el.hidden = false; el.innerHTML = userBox();
   $('#logout', el).onclick = logout; $('#guildMenu', el).onclick = guildMenuDialog;
 }
-function readLocal() { try { const raw = localStorage.getItem(LS_KEY); return raw ? migrate(JSON.parse(raw)) : null; } catch { return null; } }
+function readLocal() { try { const raw = localStorage.getItem(LS_KEY) ?? localStorage.getItem(OLD_LS_KEY); return raw ? migrate(JSON.parse(raw)) : null; } catch { return null; } }
 function migrate(s) {
   const b = blankState();
   const out = { ...b, ...s };
@@ -404,7 +405,7 @@ function route() { const h = location.hash.replace(/^#\/?/, '') || 'events'; con
 function render() {
   const { name, args } = route();
   $('#guildName').textContent = S.guild.name || 'Guild';
-  document.title = `Muster · ${S.guild.name || 'Guild'}`;
+  document.title = `RONW Planner · ${S.guild.name || 'Guild'}`;
   $$('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === name || (name === 'board' && a.dataset.nav === 'events')));
   const fn = routes[name] || routes.events;
   const scroll = window.scrollY;
@@ -1025,11 +1026,11 @@ routes.settings = (v) => {
     $$('[data-addf]', box).forEach(b => (b.onclick = () => { md.fields.push({ name: 'Field', cap: 20 }); commit(); }));
   });
   $$('[data-delmode]').forEach(b => (b.onclick = () => { if (S.modes.length > 1) { S.modes.splice(+b.dataset.delmode, 1); commit(); } else toast('Keep at least one mode'); }));
-  $('#bk').onclick = () => download(`muster-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(S, null, 2));
+  $('#bk').onclick = () => download(`ronw-planner-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(S, null, 2));
   if ($('#rs')) $('#rs').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     try { const data = migrate(JSON.parse(await f.text())); if (await confirmBox('Replace all current data with this backup?', 'Restore')) { S = data; commit(); toast('Backup restored'); } }
-    catch { toast('That file is not a Muster backup'); }
+    catch { toast('That file is not a RONW Planner backup'); }
   };
   if ($('#reset')) $('#reset').onclick = async () => { if (await confirmBox('Erase the roster, events, groups and strikes?', 'Erase')) { const name = S.guild.name; S = blankState(); S.guild.name = name; commit(); } };
   if (mode === 'server') { guildPanel(); $('#myPw').onclick = passwordDialog; if (me?.admin) sitePanel(); }
@@ -1424,7 +1425,7 @@ function renderAuctionShare(v, d, opts = shareLinkOpts()) {
   const hits = q.trim() ? d.auction.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => aucMatch(x.e.item, q))) : [];
   const A = d.auction; const member = opts.asName !== undefined;
   const canAdd = A.selfAdd && A.categories.length && (member ? !!opts.asName : A.roster.length);
-  let me = ''; try { me = localStorage.getItem('muster.me') || ''; } catch {}
+  let me = ''; try { me = (localStorage.getItem('ronw.me') ?? localStorage.getItem('muster.me')) || ''; } catch {}
   v.innerHTML = `<div class="share-banner">${member ? '' : `Reservation lists from <b>${esc(d.guild.name)}</b>. `}${canAdd ? 'You can add yourself below. ' : ''}${member && !opts.asName ? 'Ask an officer to link your account to your roster name so you can sign up. ' : ''}Ask an officer to change or remove your spot.</div>
     <div class="head"><div><h1>Reservations</h1></div></div>
     ${canAdd ? `<div class="card finder" style="margin-bottom:16px"><b>Reserve a spot${member ? ` as ${esc(opts.asName)}` : ''}</b>
@@ -1449,7 +1450,7 @@ function renderAuctionShare(v, d, opts = shareLinkOpts()) {
     $('#rgo').disabled = true; msg.textContent = 'Adding…';
     const j = await opts.reserve({ name, catId, item });
     if (!j.ok) { msg.textContent = j.error || 'Could not add you. Try again.'; $('#rgo').disabled = false; return; }
-    if (!member) { try { localStorage.setItem('muster.me', name); } catch {} }
+    if (!member) { try { localStorage.setItem('ronw.me', name); } catch {} }
     renderAuctionShare.cat = catId; renderAuctionShare.q = name;
     const fresh = await opts.refresh();
     if (fresh) renderAuctionShare(v, fresh, opts);
@@ -1457,7 +1458,7 @@ function renderAuctionShare(v, d, opts = shareLinkOpts()) {
   };
 }
 function shareLinkOpts() {
-  const t = encodeURIComponent(window.MUSTER_SHARE);
+  const t = encodeURIComponent(window.RONW_SHARE);
   return { reserve: (b) => api(`/api/share/${t}/reserve`, 'POST', b), refresh: async () => { const r = await api(`/api/share/${t}`); return r.ok ? r : null; } };
 }
 
@@ -1475,7 +1476,7 @@ async function bootMember() {
       <div id="mview"></div>`;
     $('#logout', v).onclick = logout; $('#guildMenu', v).onclick = guildMenuDialog; $('#myPw', v).onclick = passwordDialog;
     const mv = $('#mview', v);
-    document.title = `${data.guild.name} · Muster`;
+    document.title = `${data.guild.name} · RONW Planner`;
     if (tab === 'reservations') {
       return renderAuctionShare(mv, data, { asName: data.me ? data.me.name : null,
         reserve: (b) => api('/api/member/reserve', 'POST', { catId: b.catId, item: b.item }),
@@ -1518,7 +1519,7 @@ async function bootShare(token) {
 
 // ---------- boot ----------
 (async () => {
-  if (window.MUSTER_SHARE) return bootShare(window.MUSTER_SHARE);
+  if (window.RONW_SHARE) return bootShare(window.RONW_SHARE);
   if (!(await load())) return;
   appReady = true;
   render();

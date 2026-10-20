@@ -19,7 +19,7 @@ const GUILDS = path.join(DATA_DIR, 'guilds');
 const ACCOUNTS = path.join(DATA_DIR, 'users.json');
 const TRUST_PROXY = ['1', 'true', 'yes'].includes(String(process.env.TRUST_PROXY || '').toLowerCase());
 const SESSION_DAYS = 30;
-const COOKIE = 'muster_sid';
+const COOKIE = 'ronw_sid';
 const ROLES = { member: 1, officer: 2, leader: 3 };
 
 const TYPES = {
@@ -446,15 +446,15 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/share/')) {
     const token = p.slice(7);
     if (!findShare(token)) return send(res, 404, 'This share link is not valid anymore.', 'text/plain; charset=utf-8');
-    return send(res, 200, pageWith(`window.MUSTER_SHARE=${JSON.stringify(token)}`), TYPES['.html']);
+    return send(res, 200, pageWith(`window.RONW_SHARE=${JSON.stringify(token)}`), TYPES['.html']);
   }
   // Invite links: /join/<code> shows sign-up or log-in, then joins the guild.
   // New-guild links: /start/<code> lets one person make an account and start a guild.
   if (p.startsWith('/start/')) {
-    return send(res, 200, pageWith(`window.MUSTER_START=${JSON.stringify(p.slice(7))}`), TYPES['.html']);
+    return send(res, 200, pageWith(`window.RONW_START=${JSON.stringify(p.slice(7))}`), TYPES['.html']);
   }
   if (p.startsWith('/join/')) {
-    return send(res, 200, pageWith(`window.MUSTER_JOIN=${JSON.stringify(p.slice(6))}`), TYPES['.html']);
+    return send(res, 200, pageWith(`window.RONW_JOIN=${JSON.stringify(p.slice(6))}`), TYPES['.html']);
   }
 
   // Anyone with the share link adds themselves to a reservation list (only when the officer allowed it).
