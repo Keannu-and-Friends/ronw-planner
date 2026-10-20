@@ -1,0 +1,39 @@
+# Deployment step for Woodpecker CI/CD
+# Git-backed local builds as opposed to just fetching updated docker-compose.yml and pulling remote image
+
+steps:
+  - name: deploy
+    image: alpine:latest
+    environment:
+      SSH_KEY:
+        from_secret: SSH_KEY
+      SSH_HOST: root@10.0.10.222
+      PROJECT_DIRECTORY: /mnt/nvme2/files/docker\ projects/service_queue/ronw-planner
+    commands:
+      - apk add openssh
+      - mkdir -p /root/.ssh/
+      - echo "$SSH_KEY" | tr -d '\r' > /root/.ssh/id_rsa
+      - chmod 600 /root/.ssh/id_rsa
+      - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > /root/.ssh/config
+      - ssh "$SSH_HOST" "
+        cd "$PROJECT_DIRECTORY";
+        docker-compose down;
+        docker image rm "$REGISTRY_IMAGE_TAG" || true;
+        git restore . && git pull origin "$CI_COMMIT_BRANCH" --force --rebase;
+        docker-compose up -d;
+        docker image prune -af;
+        sleep 60;
+        docker-compose logs;"
+    volumes:
+      - /var/cache/apk:/etc/apk/cache
+
+when:
+  - branch: master
+    event:
+      - push
+      - manual
+
+depends_on:
+  - build
+
+skip_clone: true
