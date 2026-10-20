@@ -253,7 +253,7 @@ const persist = debounce(async () => {
       if (r.status === 401) { setSaveState('Logged out — not saved', true); reauth(); return; }
       if (!r.ok) throw new Error(r.status);
       const j = await r.json(); rev = j.rev; setSaveState('Saved to the server');
-      if (j.added?.length) adoptSelfAdds(j.added);
+      if (j.added?.length || j.edited?.length || j.gone?.length) adoptMemberChanges(j);
     } catch { setSaveState('Save failed — is the server running?', true); try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch {} }
   } else {
     try { localStorage.setItem(LS_KEY, JSON.stringify(S)); setSaveState('Saved in this browser'); }
@@ -262,24 +262,40 @@ const persist = debounce(async () => {
 }, 350);
 function commit(rerender = true) { persist(); if (rerender) render(); }
 
-// Reservations members added from the share page arrive here, either merged into a save or picked up by the poll.
-function adoptSelfAdds(list) {
-  const have = new Set(S.auction.entries.map(e => e.id));
-  const fresh = list.filter(e => !have.has(e.id) && S.auction.categories.some(c => c.id === e.catId));
-  if (!fresh.length) return;
-  S.auction.entries.push(...fresh);
-  toast(fresh.length === 1 ? `${atName(fresh[0])} joined ${S.auction.categories.find(c => c.id === fresh[0].catId).name}` : `${fresh.length} new reservations from members`, 3500);
+// Members' own changes to reservations (sign-ups, edits, removals) arrive here, either merged into a save or picked up by the poll.
+function adoptMemberChanges({ added = [], edited = [], gone = [] }) {
+  const A = S.auction; const notes = [];
+  const goneSet = new Set(gone);
+  const before = A.entries.length; A.entries = A.entries.filter(e => !goneSet.has(e.id));
+  if (A.entries.length < before) notes.push(`${before - A.entries.length} removed by members`);
+  let changed = 0;
+  edited.forEach(x => { const e = A.entries.find(y => y.id === x.id); if (e && e.item !== x.item) { e.item = x.item; changed++; } });
+  if (changed) notes.push(`${changed} edited by members`);
+  const have = new Set(A.entries.map(e => e.id));
+  const fresh = added.filter(e => !have.has(e.id) && !goneSet.has(e.id) && A.categories.some(c => c.id === e.catId));
+  A.entries.push(...fresh);
+  if (fresh.length === 1) notes.unshift(`${atName(fresh[0])} joined ${A.categories.find(c => c.id === fresh[0].catId).name}`);
+  else if (fresh.length) notes.unshift(`${fresh.length} new reservations from members`);
+  if (!notes.length) return;
+  toast(notes.join(' · '), 3500);
   const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
   if (route().name === 'auction' && $('#modal').hidden && !typing) render();
 }
 async function pollSelfAdds() {
-  if (mode !== 'server' || !S.auction.selfAdd || !S.auction.shareToken || document.hidden) return;
+  if (mode !== 'server' || document.hidden) return;
   try {
     const j = await (await fetch('/api/state', { cache: 'no-store' })).json();
-    // Only take it when nothing but member sign-ups happened since our copy.
+    // Only take it when nothing but members' own reservation changes happened since our copy.
     if (!j.state || j.rev <= rev || (j.state._officerRev ?? Infinity) > rev) return;
     const base = rev; rev = j.rev;
-    adoptSelfAdds((j.state.auction?.entries || []).filter(e => e.selfRev > base));
+    const ca = j.state.auction || {};
+    const mine = new Map(S.auction.entries.map(e => [e.id, e]));
+    const changed = (ca.entries || []).filter(e => e.selfRev > base);
+    adoptMemberChanges({
+      added: changed.filter(e => !mine.has(e.id)),
+      edited: changed.filter(e => mine.has(e.id)).map(e => ({ id: e.id, item: e.item })),
+      gone: (ca.gone || []).filter(x => x.rev > base).map(x => x.id),
+    });
   } catch { /* server offline */ }
 }
 
@@ -1664,43 +1680,93 @@ function aucShareDialog() {
 }
 
 // Public share link, or a logged-in member (opts.asName = their linked roster name).
+// Everyone gets one spot per list. Logged-in members can also edit or remove their own spots (opts.edit / opts.remove).
 function renderAuctionShare(v, d, opts = shareLinkOpts()) {
   const q = renderAuctionShare.q || '';
   const waiting = (cid) => d.auction.entries.filter(e => e.catId === cid).sort((a, b) => a.pos - b.pos);
   const hits = q.trim() ? d.auction.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => aucMatch(x.e.item, q))) : [];
-  const A = d.auction; const member = opts.asName !== undefined;
-  const canAdd = A.selfAdd && A.categories.length && (member ? !!opts.asName : A.roster.length);
+  const A = d.auction; const member = opts.asName !== undefined; const linked = member && !!opts.asName;
+  const canAdd = A.selfAdd && A.categories.length && (member ? linked : A.roster.length);
   let me = ''; try { me = (localStorage.getItem('ronw.me') ?? localStorage.getItem('muster.me')) || ''; } catch {}
-  v.innerHTML = `<div class="share-banner">${member ? '' : `Reservation lists from <b>${esc(d.guild.name)}</b>. `}${canAdd ? 'You can add yourself below. ' : ''}${member && !opts.asName ? 'Ask an officer to link your account to your roster name so you can sign up. ' : ''}Ask an officer to change or remove your spot.</div>
+  // Which lists a name already holds a spot in, and where: { catId: position }.
+  const heldBy = (nm) => {
+    const out = {}; const k = normName(nm); if (!member && !k) return out;
+    A.categories.forEach(c => { const i = waiting(c.id).findIndex(e => (member ? e.mine : normName(e.name) === k)); if (i >= 0) out[c.id] = i + 1; });
+    return out;
+  };
+  const listOptions = (held) => {
+    const firstFree = A.categories.find(c => !held[c.id]);
+    const want = held[renderAuctionShare.cat] ? firstFree?.id : (renderAuctionShare.cat || firstFree?.id);
+    return A.categories.map(c => `<option value="${c.id}" ${held[c.id] ? 'disabled' : ''} ${c.id === want ? 'selected' : ''}>${esc(c.name)}${held[c.id] ? ` (you're #${held[c.id]})` : ''}</option>`).join('');
+  };
+  const startName = member ? opts.asName : (A.roster.find(n => normName(n) === normName(me)) || '');
+  const held = heldBy(startName);
+  const mine = member ? A.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => x.e.mine)) : [];
+  const who = (e) => `${e.inRoster ? '' : '@'}${esc(e.name)}${e.mine ? ' <span class="pill">you</span>' : ''}`;
+  v.innerHTML = `<div class="share-banner">${member ? '' : `Reservation lists from <b>${esc(d.guild.name)}</b>. `}${canAdd ? 'You can add yourself below, one spot per list. ' : ''}${member && !linked ? 'Ask an officer to link your account to your roster name so you can sign up. ' : ''}${linked && !A.selfAdd ? 'Signing yourself up is turned off by your officers. ' : ''}${linked ? 'You can edit or remove your own spots.' : 'Ask an officer to change or remove your spot.'}</div>
     <div class="head"><div><h1>Reservations</h1></div></div>
+    ${mine.length ? `<div class="card finder" style="margin-bottom:16px"><b>Your spots</b>
+      ${mine.map(x => `<div class="hit"><div class="grow"><div style="color:var(--ink)">${esc(x.e.item || '—')}</div></div><span class="where">#${x.i + 1} in ${esc(x.c.name)}</span>
+        <button class="btn sm" data-myedit="${esc(x.e.id)}">Edit</button><button class="btn sm ghost danger" data-myrm="${esc(x.e.id)}">Remove</button></div>`).join('')}</div>` : ''}
     ${canAdd ? `<div class="card finder" style="margin-bottom:16px"><b>Reserve a spot${member ? ` as ${esc(opts.asName)}` : ''}</b>
       <div class="form-grid">
-        ${member ? '' : `<label class="field">Your name<input type="text" id="rn" value="${esc(A.roster.find(n => normName(n) === normName(me)) || '')}" placeholder="Search the roster"></label>`}
-        <label class="field">List<select id="rc">${A.categories.map(c => `<option value="${c.id}" ${c.id === renderAuctionShare.cat ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        ${member ? '' : `<label class="field">Your name<input type="text" id="rn" value="${esc(startName)}" placeholder="Search the roster"></label>`}
+        <label class="field">List<select id="rc">${listOptions(held)}</select></label>
         <label class="field" style="grid-column:1/-1">Wants<input type="text" id="ri" maxlength="120" placeholder="e.g. Rouge set lvl 90"></label>
       </div>
       <div class="row"><button class="btn primary" id="rgo">Join the end of the list</button><span class="muted" id="rmsg" style="font-size:13px"></span></div></div>` : ''}
     <div class="card finder" style="margin-bottom:16px"><input type="search" id="sq" placeholder="Search an item or your name" value="${esc(q)}">
-      ${q.trim() ? (hits.map((h, n) => `<div class="hit ${n === 0 ? 'first' : ''}"><div class="grow"><b>${h.e.inRoster ? '' : '@'}${esc(h.e.name)}</b><div class="q-item">${highlight(h.e.item, q)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
-        || d.auction.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => normName(x.e.name).includes(normName(q)))).map(h => `<div class="hit"><div class="grow"><b>${h.e.inRoster ? '' : '@'}${esc(h.e.name)}</b><div class="q-item">${esc(h.e.item)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
+      ${q.trim() ? (hits.map((h, n) => `<div class="hit ${n === 0 ? 'first' : ''}"><div class="grow"><b>${who(h.e)}</b><div class="q-item">${highlight(h.e.item, q)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
+        || d.auction.categories.flatMap(c => waiting(c.id).map((e, i) => ({ e, i, c })).filter(x => normName(x.e.name).includes(normName(q)))).map(h => `<div class="hit"><div class="grow"><b>${who(h.e)}</b><div class="q-item">${esc(h.e.item)}</div></div><span class="where">#${h.i + 1} in ${esc(h.c.name)}</span></div>`).join('')
         || '<div class="muted">No match.</div>') : ''}</div>
     <div class="grid-cards">${d.auction.categories.map(c => `<div class="card"><div style="padding:12px 12px 4px"><b style="font:600 16px var(--serif)">${esc(c.name)}</b>${c.note ? `<div class="cat-note" style="margin:4px 0 0">${esc(c.note)}</div>` : ''}</div>
-      ${waiting(c.id).map((e, i) => `<div class="q-row" style="grid-template-columns:28px 1fr"><span class="q-pos">${i + 1}</span><div><b>${e.inRoster ? '' : '@'}${esc(e.name)}</b>${e.item ? `<div class="q-item">${esc(e.item)}</div>` : ''}</div></div>`).join('') || '<div class="muted" style="padding:12px">Empty</div>'}</div>`).join('')}</div>`;
+      ${waiting(c.id).map((e, i) => `<div class="q-row ${e.mine ? 'mine' : ''}" style="grid-template-columns:28px 1fr"><span class="q-pos">${i + 1}</span><div><b>${who(e)}</b>${e.item ? `<div class="q-item">${esc(e.item)}</div>` : ''}</div></div>`).join('') || '<div class="muted" style="padding:12px">Empty</div>'}</div>`).join('')}</div>`;
+  const redraw = async () => { const fresh = await opts.refresh(); if (fresh) renderAuctionShare(v, fresh, opts); };
   $('#sq').oninput = debounce((e) => { renderAuctionShare.q = e.target.value; renderAuctionShare(v, d, opts); const s = $('#sq'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 150);
-  if (canAdd && !member) nameCombo($('#rn'), A.roster.map(n => ({ label: n, keys: [n] })), () => $('#ri').focus());
+  // Share link: the lists someone already holds depend on the name they pick.
+  if (canAdd && !member) {
+    const updateLists = () => { const nm = A.roster.find(n => normName(n) === normName($('#rn').value)) || ''; $('#rc').innerHTML = listOptions(heldBy(nm)); };
+    nameCombo($('#rn'), A.roster.map(n => ({ label: n, keys: [n] })), () => { updateLists(); $('#ri').focus(); });
+    $('#rn').addEventListener('input', updateLists);
+  }
   if (canAdd) $('#rgo').onclick = async () => {
-    const name = member ? opts.asName : A.roster.find(n => normName(n) === normName($('#rn').value)), catId = $('#rc').value, item = $('#ri').value.trim(), msg = $('#rmsg');
+    const name = member ? opts.asName : A.roster.find(n => normName(n) === normName($('#rn').value)), sel = $('#rc'), catId = sel.value, item = $('#ri').value.trim(), msg = $('#rmsg');
     if (!name) { msg.textContent = 'Pick your name from the roster.'; $('#rn').focus(); return; }
+    if (!catId || sel.selectedOptions[0]?.disabled) { msg.textContent = 'You already have a spot in every list.'; return; }
     if (!item) { msg.textContent = 'Say what you want.'; return; }
     $('#rgo').disabled = true; msg.textContent = 'Adding…';
     const j = await opts.reserve({ name, catId, item });
     if (!j.ok) { msg.textContent = j.error || 'Could not add you. Try again.'; $('#rgo').disabled = false; return; }
     if (!member) { try { localStorage.setItem('ronw.me', name); } catch {} }
-    renderAuctionShare.cat = catId; renderAuctionShare.q = name;
-    const fresh = await opts.refresh();
-    if (fresh) renderAuctionShare(v, fresh, opts);
+    renderAuctionShare.cat = catId; if (!member) renderAuctionShare.q = name;
+    await redraw();
     toast(`You're #${j.place} in ${A.categories.find(c => c.id === catId).name}`, 4000);
   };
+  // Your spots: edit what you want, or give the spot up.
+  $$('[data-myedit]', v).forEach(b => (b.onclick = () => {
+    const x = mine.find(m => m.e.id === b.dataset.myedit);
+    openModal(`<h2>Edit your spot</h2><div class="muted">#${x.i + 1} in ${esc(x.c.name)}. Your place in line stays the same.</div>
+      <label class="field">Wants<input type="text" id="myItem" maxlength="120" value="${esc(x.e.item || '')}"></label>
+      <div class="muted" id="myMsg" style="font-size:13px"></div>
+      <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="mySave">Save</button></div>`,
+    { onMount: (el, close) => {
+      const save = async () => {
+        const item = $('#myItem', el).value.trim(); if (!item) { $('#myMsg', el).textContent = 'Say what you want.'; return; }
+        const r = await opts.edit(x.e.id, item);
+        if (!r.ok) { $('#myMsg', el).textContent = r.error || 'Could not save it.'; return; }
+        close(); toast('Spot updated'); redraw();
+      };
+      $('#mySave', el).onclick = save; $('#myItem', el).onkeydown = (e) => { if (e.key === 'Enter') save(); };
+      setTimeout(() => $('#myItem', el).select(), 0);
+    } });
+  }));
+  $$('[data-myrm]', v).forEach(b => (b.onclick = async () => {
+    const x = mine.find(m => m.e.id === b.dataset.myrm);
+    if (!(await confirmBox(`Give up your spot #${x.i + 1} in ${x.c.name}? If you join again later, you go to the end of the line.`, 'Remove my spot'))) return;
+    const r = await opts.remove(x.e.id);
+    if (!r.ok) return toast(r.error || 'Could not remove it.', 4000);
+    toast('Spot removed'); redraw();
+  }));
 }
 function shareLinkOpts() {
   const t = encodeURIComponent(window.RONW_SHARE);
@@ -1725,6 +1791,8 @@ async function bootMember() {
     if (tab === 'reservations') {
       return renderAuctionShare(mv, data, { asName: data.me ? data.me.name : null,
         reserve: (b) => api('/api/member/reserve', 'POST', { catId: b.catId, item: b.item }),
+        edit: (id, item) => api('/api/member/reserve/edit', 'POST', { id, item }),
+        remove: (id) => api('/api/member/reserve/remove', 'POST', { id }),
         refresh: async () => { const r = await api('/api/member/view'); return r.ok ? r : null; } });
     }
     const ev = id && data.events.find(e => e.id === id);

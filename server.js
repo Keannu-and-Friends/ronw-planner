@@ -63,13 +63,21 @@ function backup(gid) {
 
 // Same name matching as the app: ignore case, spaces and symbols.
 const normName = (s) => { const a = String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); return a || String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''); };
+// A spot belongs to a roster member when it's linked to them, or (for spots added by name, like a pasted Discord list) has their name.
+const owns = (e, m) => !!m && (e.memberId ? e.memberId === m.id : normName(e.name) === normName(m.name));
 // Waiting reservations as shown publicly, each marked with whether the name is in the roster.
-function publicEntries(s) {
+// For a logged-in member (me), their own spots also carry an id and mine: true so they can edit or remove them.
+function publicEntries(s, me = null) {
   const ids = new Set((s.members || []).map(m => m.id));
   const names = new Set((s.members || []).map(m => normName(m.name)).filter(Boolean));
   return ((s.auction && s.auction.entries) || []).filter(e => e.status === 'waiting')
-    .map(({ catId, name, item, pos, memberId }) => ({ catId, name, item, pos, inRoster: (memberId && ids.has(memberId)) || names.has(normName(name)) }));
+    .map(e => {
+      const out = { catId: e.catId, name: e.name, item: e.item, pos: e.pos, inRoster: (e.memberId && ids.has(e.memberId)) || names.has(normName(e.name)) };
+      if (owns(e, me)) Object.assign(out, { id: e.id, mine: true });
+      return out;
+    });
 }
+const waitingIn = (a, catId) => (a.entries || []).filter(e => e.catId === catId && e.status === 'waiting').sort((x, y) => x.pos - y.pos);
 const nextPos = (a, catId) => (a.entries || []).filter(e => e.catId === catId).reduce((m, e) => Math.max(m, e.pos || 0), 0) + 1;
 // Active roster members a guildmate can pick their name from.
 const selfAddRoster = (s) => (s.members || []).filter(m => m.active !== false && m.name);
@@ -82,8 +90,9 @@ function addReservation(gid, s, member, catId, rawItem) {
   if (!cat) return { error: 'Pick a list.' };
   if (!item) return { error: 'Say what you want.' };
   a.entries = a.entries || [];
-  const dup = a.entries.find(e => e.catId === cat.id && e.status === 'waiting' && (e.memberId === member.id || e.name.toLowerCase() === member.name.toLowerCase()) && e.item.toLowerCase() === item.toLowerCase());
-  if (dup) return { error: 'You are already in this list for that item.', code: 409 };
+  // One spot per person per list.
+  const line = waitingIn(a, cat.id); const had = line.findIndex(e => owns(e, member));
+  if (had >= 0) return { error: `You already have a spot in ${cat.name} (#${had + 1}). Only one spot per list.`, code: 409 };
   if (s._officerRev == null) s._officerRev = s._rev || 0;
   const rev = (s._rev || 0) + 1;
   const pos = nextPos(a, cat.id);
@@ -92,6 +101,25 @@ function addReservation(gid, s, member, catId, rawItem) {
   backup(gid);
   writeState(gid, s);
   return { place: a.entries.filter(e => e.catId === cat.id && e.status === 'waiting' && e.pos <= pos).length };
+}
+
+// A member edits or removes one of their own waiting spots. Returns { error } or {}.
+function changeOwnReservation(gid, s, member, id, rawItem, remove) {
+  const a = s.auction || {};
+  const e = (a.entries || []).find(x => x.id === id && x.status === 'waiting');
+  if (!e || !owns(e, member)) return { error: 'That spot isn’t yours, or it’s already gone.', code: 404 };
+  const item = String(rawItem || '').trim().slice(0, 120);
+  if (!remove && !item) return { error: 'Say what you want.' };
+  if (s._officerRev == null) s._officerRev = s._rev || 0;
+  const rev = (s._rev || 0) + 1;
+  if (remove) {
+    a.entries = a.entries.filter(x => x !== e);
+    a.gone = [...(a.gone || []), { id: e.id, rev }].slice(-300);
+  } else Object.assign(e, { item, selfRev: rev, editedAt: new Date().toISOString() });
+  s._rev = rev; s._savedAt = new Date().toISOString();
+  backup(gid);
+  writeState(gid, s);
+  return {};
 }
 
 // Finds which guild a share token belongs to.
@@ -434,24 +462,33 @@ async function handleApi(req, res, p) {
         const body = JSON.parse(await readBody(req));
         const current = readState(g.id);
         const curRev = current ? current._rev || 0 : 0;
-        let added = [];
+        let added = [], edited = [], gone = [];
         if (typeof body.baseRev === 'number' && body.baseRev !== curRev) {
-          // If only members added reservations since this client's copy, keep theirs and accept the save.
+          // If only members changed reservations since this client's copy, keep their changes and accept the save.
           if (!current || current._officerRev == null || body.baseRev < current._officerRev || body.baseRev > curRev || !body.state || !body.state.auction) {
             return send(res, 409, { error: 'conflict', rev: curRev, state: current });
           }
-          const have = new Set((body.state.auction.entries || []).map(e => e.id));
+          const ca = current.auction || {};
+          gone = (ca.gone || []).filter(x => x.rev > body.baseRev).map(x => x.id);
+          const goneSet = new Set(gone);
+          const incoming = (body.state.auction.entries || []).filter(e => !goneSet.has(e.id));
+          const byId = new Map(incoming.map(e => [e.id, e]));
           const cats = new Set((body.state.auction.categories || []).map(c => c.id));
-          added = ((current.auction && current.auction.entries) || []).filter(e => e.selfRev > body.baseRev && !have.has(e.id) && cats.has(e.catId));
-          body.state.auction.entries = body.state.auction.entries || [];
-          added.forEach(e => { e.pos = nextPos(body.state.auction, e.catId); body.state.auction.entries.push(e); });
+          body.state.auction.entries = incoming;
+          (ca.entries || []).filter(e => e.selfRev > body.baseRev).forEach(e => {
+            const there = byId.get(e.id);
+            if (there) { if (there.status === 'waiting' && there.item !== e.item) { there.item = e.item; there.selfRev = e.selfRev; edited.push({ id: e.id, item: e.item }); } }
+            else if (cats.has(e.catId)) { e.pos = nextPos(body.state.auction, e.catId); incoming.push(e); added.push(e); }
+          });
         }
+        // The app doesn't keep the removal log, so carry it over from the saved copy.
+        if (current && current.auction && current.auction.gone && body.state && body.state.auction) body.state.auction.gone = current.auction.gone;
         const next = { ...body.state, _rev: curRev + 1, _officerRev: curRev + 1, _savedAt: new Date().toISOString() };
         backup(g.id);
         writeState(g.id, next);
         const name = next.guild && String(next.guild.name || '').trim().slice(0, 60);
         if (name && name !== g.name) { g.name = name; writeDb(d); }
-        return send(res, 200, { ok: true, rev: next._rev, added });
+        return send(res, 200, { ok: true, rev: next._rev, added, edited, gone });
       } catch (e) {
         return send(res, 400, { error: String(e.message || e) });
       }
@@ -466,9 +503,10 @@ async function handleApi(req, res, p) {
     const events = (s.events || []).map(ev => { ev.fields.forEach(f => f.parties.forEach(pt => pt.slots.forEach(id => id && ids.add(id)))); return { ...ev, attendance: undefined, shareToken: undefined }; });
     const members = (s.members || []).filter(m => ids.has(m.id)).map(({ id, name, job, level, gs }) => ({ id, name, job, level, gs }));
     const a = s.auction || {};
+    const meRoster = (s.members || []).find(m => m.id === myId) || null;
     return send(res, 200, {
       guild: { name: g.name }, roles: s.roles || {}, events, members, me: members.find(m => m.id === myId) || null,
-      auction: { categories: (a.categories || []).map(({ id, name, note }) => ({ id, name, note })), entries: publicEntries(s), selfAdd: !!a.selfAdd },
+      auction: { categories: (a.categories || []).map(({ id, name, note }) => ({ id, name, note })), entries: publicEntries(s, meRoster), selfAdd: !!a.selfAdd },
     });
   }
   if (p === '/api/member/reserve' && req.method === 'POST') {
@@ -478,6 +516,15 @@ async function handleApi(req, res, p) {
     if (!m) return send(res, 400, { error: 'Your account is not linked to a roster name yet. Ask an officer.' });
     const b = await readJson(req); const r = addReservation(g.id, s, m, b.catId, b.item);
     return r.error ? send(res, r.code || 400, { error: r.error }) : send(res, 200, { ok: true, place: r.place });
+  }
+  // A member edits what they want, or removes their spot. Only their own spots, never anyone else's.
+  if ((p === '/api/member/reserve/edit' || p === '/api/member/reserve/remove') && req.method === 'POST') {
+    const s = readState(g.id);
+    const m = s && (s.members || []).find(x => x.id === ctx.person.memberId);
+    if (!m) return send(res, 400, { error: 'Your account is not linked to a roster name yet. Ask an officer.' });
+    const b = await readJson(req);
+    const r = changeOwnReservation(g.id, s, m, b.id, b.item, p.endsWith('/remove'));
+    return r.error ? send(res, r.code || 400, { error: r.error }) : send(res, 200, { ok: true });
   }
   return null;
 }

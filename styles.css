@@ -231,3 +231,5 @@ body.share .board { grid-template-columns: 1fr; }
 .ub-me span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .member-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 18px; }
 .member-bar .ub-guild .btn { width: auto; }
+
+.q-row.mine { background: color-mix(in srgb, var(--brass) 10%, transparent); }
