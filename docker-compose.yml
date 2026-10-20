@@ -2,8 +2,7 @@
 #
 #   docker compose up -d --build
 #
-# By default the app is reachable from this machine only (127.0.0.1:4747). Put the server's own
-# web server (nginx, Apache, ...) or a Cloudflare Tunnel in front of it for the domain and HTTPS.
+# Accounts and guild data are kept in ./data next to this file (users.json and guilds/).
 # Settings come from .env (see .env.example).
 
 services:
@@ -13,13 +12,10 @@ services:
     container_name: ronw-planner
     restart: unless-stopped
     environment:
-      # 1 = trust the proxy in front for the visitor's IP and HTTPS. Set 0 only if APP_BIND exposes the app directly.
+      # 1 = a web server or tunnel sits in front and passes the visitor's IP and HTTPS.
+      # Set 0 if visitors connect to the app's port directly.
       TRUST_PROXY: ${TRUST_PROXY:-1}
     volumes:
-      # Accounts and guild data. Survives rebuilds and updates.
-      - ronw-data:/data
+      - ./data:/data
     ports:
-      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-4747}:4747"
-
-volumes:
-  ronw-data:
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-4747}:4747"

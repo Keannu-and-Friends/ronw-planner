@@ -24,21 +24,18 @@ Needs Docker with Compose. In the project folder:
 docker compose up -d --build
 ```
 
-The app runs at `127.0.0.1:4747` on that machine, restarts on its own, and keeps accounts and guild data in a Docker volume (`ronw-data`), so they survive rebuilds and updates. To put it on a domain, point the server's web server (nginx, Apache, ...) or a Cloudflare Tunnel at `http://127.0.0.1:4747`. With nginx, pass the headers listed under step 6 below.
+The app listens on port `4747` on all of the server's network addresses (`0.0.0.0`) and restarts on its own. Accounts and guild data are kept in the **`data/` folder** next to `docker-compose.yml` (`data/users.json` and `data/guilds/`), so they survive rebuilds and updates, and Git ignores that folder. To put it on a domain, point the server's web server (nginx, Apache, ...) or a Cloudflare Tunnel at `http://127.0.0.1:4747`. With nginx, pass the headers listed under step 6 below.
 
-To change the port or how it's exposed, copy `.env.example` to `.env` and edit it.
+To change the port or how it's exposed, copy `.env.example` to `.env` and edit it:
+- `APP_PORT`: the port on the server (default `4747`).
+- `APP_BIND`: `0.0.0.0` (default, reachable from the network) or `127.0.0.1` (this machine only, when a web server or tunnel on the same machine is in front).
+- `TRUST_PROXY`: `1` (default) when a web server or tunnel is in front. Set `0` if people open `http://server:4747` directly, so nobody can fake their IP to get around the login limits.
 
 - **Update**: `git pull`, then `docker compose up -d --build`.
 - **Logs**: `docker compose logs -f`
-- **Account commands**: `docker compose exec app node server.js reset-password <name>` (also `add-user`, `make-leader`, `make-admin`).
-- **Bring existing data in** (`users.json` and `guilds/` from another computer):
-  ```
-  docker compose cp users.json app:/data/
-  docker compose cp guilds app:/data/
-  docker compose exec -u root app chown -R node:node /data
-  docker compose restart app
-  ```
-- **Back up the data** to a `ronw-backup` folder on the server: `docker compose cp app:/data ./ronw-backup`
+- **Account commands**: `docker compose exec -u node app node server.js reset-password <name>` (also `add-user`, `make-leader`, `make-admin`).
+- **Bring existing data in**: stop it (`docker compose down`), copy `users.json` and the `guilds/` folder into `data/`, then start it again. The container fixes the files' owner on start.
+- **Back up the data**: copy the `data/` folder somewhere safe.
 
 ## Host it on your own server and domain (without Docker)
 
@@ -124,5 +121,6 @@ These steps are for a Linux server you control (a VPS or a home server) with a d
 - `index.html`, `styles.css`, `app.js`: the app itself, in plain JavaScript with no build step.
 - `package.json`: lets you start it with `npm start`. There are no dependencies to install.
 - `Dockerfile`, `docker-compose.yml`, `.env.example`: the Docker setup. The image never contains `users.json` or `guilds/`.
+- `data/`: with Docker, holds `users.json` and `guilds/`. Kept out of Git.
 - `users.json`: accounts, logins and guild membership. Never served to browsers, and kept out of Git.
 - `guilds/`: one folder per guild with its `data.json` and `backups/`. Never served to browsers, and kept out of Git.
