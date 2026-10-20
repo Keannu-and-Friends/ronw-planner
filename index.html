@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muster</title>
+<meta name="description" content="Local guild party planner: roster, auto-filled parties, attendance and strikes.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23181512'/%3E%3Cpath d='M8 23V9l8 8 8-8v14' stroke='%23e0a24a' stroke-width='3' fill='none' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="./styles.css">
+<!--SHARE-->
+</head>
+<body>
+<div id="app" class="app">
+  <aside class="nav" id="nav">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 23V9l8 8 8-8v14" /></svg>
+      <div>
+        <div class="brand-name">Muster</div>
+        <div class="brand-sub" id="guildName">Guild</div>
+      </div>
+    </div>
+    <nav>
+      <a href="#/events" data-nav="events">Events</a>
+      <a href="#/roster" data-nav="roster">Roster</a>
+      <a href="#/groups" data-nav="groups">Groups</a>
+      <a href="#/attendance" data-nav="attendance">Attendance</a>
+      <a href="#/strikes" data-nav="strikes">Strikes</a>
+      <a href="#/auction" data-nav="auction">Auction</a>
+      <a href="#/settings" data-nav="settings">Settings</a>
+    </nav>
+    <div class="nav-user" id="navUser" hidden></div>
+    <div class="nav-foot" id="saveState">Not saved yet</div>
+  </aside>
+  <main id="view" class="view"></main>
+</div>
+<div id="modal" class="modal" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<script src="./app.js"></script>
+</body>
+</html>

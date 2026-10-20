@@ -1,0 +1,25 @@
+# Private data: never commit these
+# Accounts, hashed passwords, login sessions and guild membership
+users.json
+# Every guild's roster, events, attendance, auction and backups
+guilds/
+# Data from before guilds existed, and its backups
+data.json
+data.json.moved
+backups/
+# Half-written saves
+*.tmp
+
+# Secrets and server settings
+.env
+.env.*
+
+# Local tool settings
+.claude
+
+# Node, logs and OS clutter
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
