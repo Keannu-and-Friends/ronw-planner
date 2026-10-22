@@ -169,7 +169,7 @@ function findShare(token) {
 function readDb() {
   let d = {}; try { d = JSON.parse(fs.readFileSync(ACCOUNTS, 'utf8')); } catch {}
   const now = Date.now();
-  return { users: d.users || [], sessions: d.sessions || {}, guilds: d.guilds || [], site: { inviteOnly: true, ...(d.site || {}) }, starts: (d.starts || []).filter(x => x.exp > now) };
+  return { users: d.users || [], sessions: d.sessions || {}, guilds: d.guilds || [], site: { inviteOnly: true, ...(d.site || {}) }, starts: (d.starts || []).filter(x => x.exp > now), resets: (d.resets || []).filter(x => x.exp > now) };
 }
 function writeDb(d) {
   const now = Date.now();
@@ -207,6 +207,30 @@ function addUser(d, username, password) {
 }
 // Deleting an account removes the login, its sessions and its place in a guild. Guild data and roster entries stay.
 // Returns an error message when it isn't allowed.
+// ---------- password reset links ----------
+// A leader or the site admin makes a one-time link (24 hours) and sends it privately, e.g. in a Discord DM.
+// Only a hash of the link is stored. Making a new link for someone cancels their older ones.
+const RESET_HOURS = 24;
+// Who may make a reset link for whom: the site admin for anyone else; a guild leader for members and officers
+// of their own guild (not other leaders, and not the site admin), so a leader can't take over a fellow leader.
+function resetLinkProblem(d, ctx, username) {
+  const target = findUser(d, username); if (!target) return 'No such account.';
+  if (same(target.username, ctx.username)) return 'To change your own password, use My account.';
+  if (findUser(d, ctx.username).admin) return null;
+  const tp = ctx.guild && personIn(ctx.guild, target.username);
+  if (ctx.role !== 'leader' || !tp) return 'Only a guild leader (for their own guild) or the site admin can make reset links.';
+  if (tp.role === 'leader' || target.admin) return 'Only the site admin can make a reset link for a guild leader or a site admin.';
+  return null;
+}
+function makeResetLink(d, username, by) {
+  const target = findUser(d, username);
+  const token = crypto.randomBytes(24).toString('base64url');
+  d.resets = (d.resets || []).filter(x => !same(x.user, target.username));
+  d.resets.push({ hash: sha(token), user: target.username, by, exp: Date.now() + RESET_HOURS * 3600e3 });
+  return { token, user: target.username, hours: RESET_HOURS };
+}
+const findReset = (d, token) => token && (d.resets || []).find(x => x.hash === sha(String(token)));
+
 function accountDeleteProblem(d, username) {
   const user = findUser(d, username); if (!user) return 'No such account.';
   if (user.admin && d.users.filter(u => u.admin).length === 1) return 'This is the only site admin account. Make another admin first (node server.js make-admin <name>).';
@@ -349,6 +373,25 @@ async function handleApi(req, res, p) {
     limits.delete('login' + ip); startSession(req, res, d, user.username);
     return send(res, 200, { ok: true });
   }
+  const resetCheck = p.match(/^\/api\/reset\/([\w-]{20,64})$/);
+  if (resetCheck && req.method === 'GET') {
+    const r = findReset(readDb(), resetCheck[1]);
+    return r ? send(res, 200, { user: r.user }) : send(res, 404, { error: 'This reset link has expired or was already used. Ask your guild leader for a new one.' });
+  }
+  if (p === '/api/reset' && req.method === 'POST') {
+    const ip = clientIp(req);
+    if (limited('reset', ip, 20, 15 * 60e3)) return send(res, 429, { error: 'Too many tries. Wait 15 minutes.' });
+    const b = await readJson(req); const d = readDb(); const r = findReset(d, b.token);
+    if (!r) { note('reset', ip, 15 * 60e3); return send(res, 404, { error: 'This reset link has expired or was already used. Ask your guild leader for a new one.' }); }
+    if (String(b.password || '').length < 8) return send(res, 400, { error: 'Password must be at least 8 characters.' });
+    const user = findUser(d, r.user); if (!user) return send(res, 404, { error: 'That account no longer exists.' });
+    Object.assign(user, hashPassword(b.password));
+    // The link is used up, and every old login for this account is signed out.
+    d.resets = d.resets.filter(x => !same(x.user, user.username));
+    Object.keys(d.sessions).forEach(k => { if (same(d.sessions[k].user, user.username)) delete d.sessions[k]; });
+    startSession(req, res, d, user.username);
+    return send(res, 200, { ok: true, user: user.username });
+  }
   if (p === '/api/logout' && req.method === 'POST') {
     const t = cookieToken(req);
     if (t) { const d = readDb(); delete d.sessions[sha(t)]; writeDb(d); }
@@ -420,6 +463,13 @@ async function handleApi(req, res, p) {
     user.canCreateGuild = true; d.starts = d.starts.filter(x => x !== start); writeDb(d);
     return send(res, 200, { ok: true });
   }
+  if (p === '/api/site/reset-link' && req.method === 'POST') {
+    if (!findUser(d, ctx.username).admin) return send(res, 403, { error: 'Only the site admin can do that.' });
+    const b = await readJson(req); const problem = resetLinkProblem(d, ctx, b.username);
+    if (problem) return send(res, 400, { error: problem });
+    const r = makeResetLink(d, b.username, ctx.username); writeDb(d);
+    return send(res, 200, { ok: true, ...r });
+  }
   if (p.startsWith('/api/site')) {
     if (!findUser(d, ctx.username).admin) return send(res, 403, { error: 'Only the site admin can do that.' });
     if (p === '/api/site' && req.method === 'GET') return send(res, 200, { inviteOnly: d.site.inviteOnly, starts: d.starts, guilds: d.guilds.length, users: d.users.length });
@@ -475,6 +525,12 @@ async function handleApi(req, res, p) {
     if (b.memberId) { const taken = g.people.find(x => x !== target && x.memberId === b.memberId); if (taken) return send(res, 400, { error: `That roster member is already linked to ${taken.username}.` }); }
     target.memberId = b.memberId || null; target.linkedBy = b.memberId ? 'officer' : undefined; writeDb(d);
     return send(res, 200, { ok: true });
+  }
+  if (p === '/api/guild/reset-link' && req.method === 'POST') {
+    const b = await readJson(req); const problem = resetLinkProblem(d, ctx, b.username);
+    if (problem) return send(res, 403, { error: problem });
+    const r = makeResetLink(d, b.username, ctx.username); writeDb(d);
+    return send(res, 200, { ok: true, ...r });
   }
   if (p === '/api/guild/remove' && req.method === 'POST') {
     const b = await readJson(req); const self = same(b.username, ctx.username);
@@ -607,6 +663,10 @@ const server = http.createServer(async (req, res) => {
   // New-guild links: /start/<code> lets one person make an account and start a guild.
   if (p.startsWith('/start/')) {
     return send(res, 200, pageWith(`window.RONW_START=${JSON.stringify(p.slice(7))}`), TYPES['.html']);
+  }
+  // Password reset links: /reset/<token> shows "set a new password".
+  if (p.startsWith('/reset/')) {
+    return send(res, 200, pageWith(`window.RONW_RESET=${JSON.stringify(p.slice(7))}`), TYPES['.html']);
   }
   if (p.startsWith('/join/')) {
     return send(res, 200, pageWith(`window.RONW_JOIN=${JSON.stringify(p.slice(6))}`), TYPES['.html']);

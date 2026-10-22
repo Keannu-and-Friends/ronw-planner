@@ -1586,7 +1586,7 @@ async function guildPanel() {
         return `<tr><td><b>${esc(p.username)}</b>${self ? ' <span class="pill">you</span>' : ''}</td>
           <td>${leader ? `<select data-role="${esc(p.username)}">${Object.keys(ROLE_LABEL).map(k => `<option value="${k}" ${p.role === k ? 'selected' : ''}>${ROLE_LABEL[k]}</option>`).join('')}</select>` : ROLE_LABEL[p.role]}</td>
           <td><button class="btn sm ghost" data-link="${esc(p.username)}">${m ? `${esc(m.name)} · ${esc(pretty(m.job))}` : '<span style="color:var(--warn)">Link to roster…</span>'}</button>${m && p.linkedBy === 'self' ? ' <span class="pill" title="They picked this roster name themselves">set by them</span>' : ''}${m && p.linkedBy === 'auto' ? ' <span class="pill" title="Linked automatically because the username matches">matched name</span>' : ''}</td>
-          <td style="text-align:right">${self ? '<button class="btn sm ghost" id="leave">Leave guild</button>' : leader ? `<button class="btn sm ghost danger" data-rm="${esc(p.username)}">Remove</button>` : ''}</td></tr>`; }).join('')}
+          <td style="text-align:right;white-space:nowrap">${self ? '<button class="btn sm ghost" id="leave">Leave guild</button>' : leader ? `${p.role !== 'leader' ? `<button class="btn sm ghost" data-reset="${esc(p.username)}" title="Make a one-time link to set a new password">Reset password</button> ` : ''}<button class="btn sm ghost danger" data-rm="${esc(p.username)}">Remove</button>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>`;
   $('#copyInv', box).onclick = async () => { try { await navigator.clipboard.writeText(inviteUrl); toast('Invite link copied'); } catch { toast('Select the link and copy it'); } };
   if ($('#newInv', box)) $('#newInv', box).onclick = async () => { const x = await api('/api/guild/invite', 'POST'); toast(x.ok ? 'New invite link made. The old one no longer works.' : x.error); guildPanel(); };
@@ -1596,6 +1596,7 @@ async function guildPanel() {
     if (x.ok && s.dataset.role === r.me) return goHome();
     guildPanel();
   }));
+  $$('[data-reset]', box).forEach(b => (b.onclick = () => makeResetLinkFor(b.dataset.reset, '/api/guild/reset-link')));
   $$('[data-rm]', box).forEach(b => (b.onclick = async () => {
     if (!(await confirmBox(`Remove ${b.dataset.rm} from ${r.name}? Their account stays, but they lose access to this guild.`, 'Remove'))) return;
     const x = await api('/api/guild/remove', 'POST', { username: b.dataset.rm }); toast(x.ok ? 'Removed from the guild' : x.error); guildPanel();
@@ -1651,8 +1652,9 @@ async function accountsList() {
     ${accounts.map(a => `<tr><td><b>${esc(a.username)}</b>${a.admin ? ' <span class="pill">admin</span>' : ''}${a.username === r.me ? ' <span class="pill">you</span>' : ''}</td>
       <td>${a.guild ? esc(a.guild) : '<span class="muted">none</span>'}</td><td>${a.role ? ROLE_LABEL[a.role] : '—'}</td>
       <td class="mono">${esc(String(a.createdAt || '').slice(0, 10))}</td>
-      <td style="text-align:right">${a.username === r.me ? '' : `<button class="btn sm ghost danger" data-delacct="${esc(a.username)}">Delete</button>`}</td></tr>`).join('')}
+      <td style="text-align:right;white-space:nowrap">${a.username === r.me ? '' : `<button class="btn sm ghost" data-resetacct="${esc(a.username)}">Reset password</button> <button class="btn sm ghost danger" data-delacct="${esc(a.username)}">Delete</button>`}</td></tr>`).join('')}
   </tbody></table></div>`;
+  $$('[data-resetacct]', box).forEach(b => (b.onclick = () => makeResetLinkFor(b.dataset.resetacct, '/api/site/reset-link')));
   $$('[data-delacct]', box).forEach(b => (b.onclick = async () => {
     const name = b.dataset.delacct;
     if (!(await confirmBox(`Delete the account “${name}”? They're logged out everywhere and can't log in again. Their guild's data and roster name stay.`, 'Delete account'))) return;
@@ -2167,6 +2169,48 @@ async function bootMember() {
 }
 
 // ---------- share view ----------
+// ---------- password reset links ----------
+async function makeResetLinkFor(username, endpoint) {
+  if (!(await confirmBox(`Make a password reset link for ${username}? It works once for 24 hours, and anyone who has it can set their password, so send it to them privately (for example in a Discord DM). Any older link for them stops working.`, 'Make link'))) return;
+  const r = await api(endpoint, 'POST', { username });
+  if (!r.ok) return toast(r.error || 'Could not make a link.', 5000);
+  const url = `${location.origin}/reset/${r.token}`;
+  openModal(`<h2>Reset link for ${esc(r.user)}</h2>
+    <p class="muted" style="margin:0">Send this to ${esc(r.user)} privately. It works once, for ${r.hours} hours. When they use it, they're logged out everywhere else.</p>
+    <div class="row"><input type="text" id="rlUrl" readonly value="${esc(url)}" style="flex:1;min-width:240px" onclick="this.select()"><button class="btn primary" id="rlCopy">Copy</button></div>
+    <div class="muted" style="font-size:12px">This is the only time the link is shown. If it's lost, just make a new one.</div>
+    <div class="actions"><button class="btn" data-close>Done</button></div>`,
+  { onMount: (el) => {
+    $('#rlCopy', el).onclick = async () => { try { await navigator.clipboard.writeText(url); toast('Reset link copied'); } catch { $('#rlUrl', el).select(); toast('Select the link and copy it'); } };
+    setTimeout(() => $('#rlUrl', el).select(), 0);
+  } });
+}
+async function bootReset(token) {
+  document.body.classList.add('share');
+  const v = $('#view');
+  const r = await api(`/api/reset/${encodeURIComponent(token)}`);
+  if (!r.ok) { v.innerHTML = `<div class="login card"><h1>Reset password</h1><p class="muted">${esc(r.error || 'This link isn’t valid.')}</p><button class="btn" onclick="location.href='/'">Go to RONW Planner</button></div>`; return; }
+  v.innerHTML = `<div class="login card"><h1>Set a new password</h1>
+    <p class="muted" style="margin:0">For the account <b>${esc(r.user)}</b>. This link works once.</p>
+    <input type="text" autocomplete="username" value="${esc(r.user)}" hidden>
+    <label class="field">New password (at least 8 characters)<input type="password" id="np1" autocomplete="new-password"></label>
+    <label class="field">New password again<input type="password" id="np2" autocomplete="new-password"></label>
+    <div class="muted" id="npMsg" style="font-size:13px;color:var(--danger)"></div>
+    <button class="btn primary" id="npGo">Save new password</button></div>`;
+  const go = async () => {
+    const a = $('#np1').value, b = $('#np2').value, msg = $('#npMsg');
+    if (a.length < 8) { msg.textContent = 'Use at least 8 characters.'; return; }
+    if (a !== b) { msg.textContent = 'The passwords don’t match.'; return; }
+    $('#npGo').disabled = true;
+    const x = await api('/api/reset', 'POST', { token, password: a });
+    if (!x.ok) { msg.textContent = x.error || 'Could not save it.'; $('#npGo').disabled = false; return; }
+    location.href = '/';
+  };
+  $('#npGo').onclick = go;
+  ['#np1', '#np2'].forEach(id => ($(id).onkeydown = (e) => { if (e.key === 'Enter') go(); }));
+  setTimeout(() => $('#np1').focus(), 0);
+}
+
 async function bootShare(token) {
   document.body.classList.add('share');
   const t = encodeURIComponent(token);
@@ -2188,6 +2232,7 @@ async function bootShare(token) {
 // ---------- boot ----------
 (async () => {
   if (window.RONW_SHARE) return bootShare(window.RONW_SHARE);
+  if (window.RONW_RESET) return bootReset(window.RONW_RESET);
   if (!(await load())) return;
   appReady = true;
   if (purgeOldDeleted()) persist();
