@@ -243,3 +243,7 @@ body.share .board { grid-template-columns: 1fr; }
 
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--ink); }
+
+.party-top .plabel { cursor: text; border-radius: 4px; padding: 0 2px; }
+.party-top .plabel:hover { background: var(--panel-2); outline: 1px dashed var(--line-2); }
+.plabel-input { font: inherit; font-weight: 600; width: 9em; padding: 1px 4px; border: 1px solid var(--brass); border-radius: 4px; background: var(--panel-2); color: var(--ink); }

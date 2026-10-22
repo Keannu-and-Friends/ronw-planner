@@ -599,7 +599,7 @@ function renderBoard(v, ev, readOnly, ctx = {}) {
   };
   const partyHtml = (f, p) => `
     <div class="party ${p.locked ? 'locked' : ''}" data-party="${f.id}|${p.id}">
-      <div class="party-top" ${readOnly ? '' : 'draggable="true" title="Drag to move this whole party"'}>${readOnly ? '' : '<span class="grip" aria-hidden="true">⠿</span>'}<b>${esc(p.label)}</b>${p.note ? `<span class="muted" title="${esc(p.note)}">· ${esc(p.note.slice(0, 18))}</span>` : ''}
+      <div class="party-top" ${readOnly ? '' : 'draggable="true" title="Drag to move this whole party"'}>${readOnly ? '' : '<span class="grip" aria-hidden="true">⠿</span>'}<b ${readOnly ? '' : 'class="plabel" title="Click to rename"'}>${esc(p.label)}</b>${p.note ? `<span class="muted" title="${esc(p.note)}">· ${esc(p.note.slice(0, 18))}</span>` : ''}
         <span class="gs" title="Total gear score">${fmtNum(partyGs(p, mm))}</span>
         ${readOnly ? '' : `<button class="icon-btn ${p.locked ? 'on' : ''}" data-act="lock" title="${p.locked ? 'Unlock' : 'Lock'} party">${p.locked ? '🔒' : '🔓'}</button><button class="icon-btn" data-act="party" title="Party options">⋯</button>`}
       </div>
@@ -681,6 +681,24 @@ function wireBoard(v, ev) {
     const [fid, pid] = el.dataset.party.split('|'); const { p } = findParty(ev, fid, pid);
     $('[data-act=lock]', el).onclick = () => { p.locked = !p.locked; touch(); };
     $('[data-act=party]', el).onclick = () => partyDialog(ev, fid, pid);
+    // Click the party name to rename it right there: Enter or clicking away saves, Esc cancels.
+    const name = $('.plabel', el);
+    if (name) name.onclick = (e) => {
+      e.stopPropagation();
+      const top = name.closest('.party-top'); top.draggable = false; // so selecting text doesn't start a party drag
+      const input = document.createElement('input');
+      Object.assign(input, { type: 'text', value: p.label, maxLength: 40, className: 'plabel-input' });
+      name.replaceWith(input); input.focus(); input.select();
+      let done = false;
+      const finish = (save) => {
+        if (done) return; done = true; top.draggable = true;
+        const label = input.value.trim();
+        if (save && label && label !== p.label) { p.label = label; touch(); } else input.replaceWith(name);
+      };
+      input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); } };
+      input.onblur = () => finish(true);
+      input.onclick = (e) => e.stopPropagation();
+    };
   });
 
   $$('#bench .chip').forEach(c => (c.onclick = () => {
