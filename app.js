@@ -341,6 +341,14 @@ async function refreshFromServer() {
 // ---------- domain helpers ----------
 const roleOf = (m) => (m && S.roles[m.job]) || 'dps';
 const memberById = () => Object.fromEntries(S.members.map(m => [m.id, m]));
+// Roster lookup that also knows old names (m.aliases). A current name always wins over someone's old name.
+function rosterIndex(keyOf) {
+  const out = {};
+  S.members.forEach(m => { const k = keyOf(m.name); if (k && !out[k]) out[k] = m; });
+  S.members.forEach(m => (m.aliases || []).forEach(a => { const k = keyOf(a); if (k && !out[k]) out[k] = m; }));
+  return out;
+}
+const lowerName = (n) => String(n || '').trim().toLowerCase();
 const activeMembers = () => S.members.filter(m => m.active !== false);
 // Strikes count per calendar month when strikeReset is 'monthly': everyone starts the month at 0, and older strikes stay as history.
 const monthOf = (d) => { const x = d ? new Date(d) : new Date(); return isNaN(x) ? '' : `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`; };
@@ -997,6 +1005,7 @@ function memberDialog(m) {
       <label class="field">Contribution<input type="number" id="m-con" value="${esc(m?.contribution ?? '')}"></label>
       <label class="field">Discord<input type="text" id="m-dc" value="${esc(m?.discord || '')}"></label>
       <label class="field" style="grid-column:1/-1">Notes<input type="text" id="m-notes" value="${esc(m?.notes || '')}"></label>
+      ${m ? `<label class="field" style="grid-column:1/-1">Old names (separate with commas; imports recognize these too)<input type="text" id="m-aliases" value="${esc((m.aliases || []).join(', '))}"></label>` : ''}
     </div>
     <label class="check"><input type="checkbox" id="m-active" ${m?.active === false ? '' : 'checked'}> Active (used by auto-fill)</label>
     <div class="actions">${m ? '<button class="btn danger" id="del" style="margin-right:auto">Remove</button>' : ''}<button class="btn" data-close>Cancel</button><button class="btn primary" id="sv">Save</button></div>`,
@@ -1004,7 +1013,12 @@ function memberDialog(m) {
     $('#sv', el).onclick = () => {
       const name = $('#m-name', el).value.trim(); if (!name) { toast('Name is required'); return; }
       const data = { name, job: $('#m-job', el).value, level: num($('#m-level', el).value, null), gs: num($('#m-gs', el).value), position: $('#m-pos', el).value.trim(), contribution: $('#m-con', el).value === '' ? null : num($('#m-con', el).value), discord: $('#m-dc', el).value.trim(), notes: $('#m-notes', el).value.trim(), active: $('#m-active', el).checked, updatedAt: new Date().toISOString() };
-      if (m) Object.assign(m, data); else S.members.push({ id: uid('mb'), createdAt: data.updatedAt, ...data });
+      if (m) {
+        const aliases = $('#m-aliases', el).value.split(',').map(x => x.trim()).filter(Boolean);
+        if (lowerName(m.name) !== lowerName(name)) aliases.push(m.name);
+        data.aliases = [...new Map(aliases.filter(a => lowerName(a) !== lowerName(name)).map(a => [lowerName(a), a])).values()];
+        Object.assign(m, data);
+      } else S.members.push({ id: uid('mb'), createdAt: data.updatedAt, ...data });
       close(); commit();
     };
     if (m) $('#del', el).onclick = async () => {
@@ -1054,17 +1068,18 @@ function importDialog() {
       const how = $('input[name=how]:checked', el).value; const now = new Date().toISOString();
       parsed.forEach(p => { if (!S.roles[p.job]) S.roles[p.job] = 'dps'; });
       if (how === 'replace') {
-        const old = Object.fromEntries(S.members.map(m => [m.name.toLowerCase(), m]));
-        S.members = parsed.map(p => ({ ...(old[p.name.toLowerCase()] || { id: uid('mb'), createdAt: now }), ...p, active: true, updatedAt: now }));
+        const old = rosterIndex(lowerName);
+        S.members = parsed.map(p => ({ ...(old[lowerName(p.name)] || { id: uid('mb'), createdAt: now }), ...p, active: true, updatedAt: now }));
         const ids = new Set(S.members.map(m => m.id));
         S.events.forEach(e => e.fields.forEach(f => f.parties.forEach(pt => pt.slots.forEach((id, i) => { if (id && !ids.has(id)) { pt.slots[i] = null; pt.pins[i] = false; } }))));
         S.groups.forEach(g => (g.memberIds = g.memberIds.filter(x => ids.has(x))));
       } else {
-        const byName = Object.fromEntries(S.members.map(m => [m.name.toLowerCase(), m]));
+        const byName = rosterIndex(lowerName);
         const seen = new Set();
         parsed.forEach(p => {
-          const ex = byName[p.name.toLowerCase()]; seen.add(p.name.toLowerCase());
+          const ex = byName[lowerName(p.name)]; seen.add(lowerName(ex ? ex.name : p.name));
           const clean = Object.fromEntries(Object.entries(p).filter(([k, v]) => v !== '' && v !== null && !(k === 'gs' && v === 0 && ex)));
+          if (ex && lowerName(ex.name) !== lowerName(p.name)) delete clean.name;
           if (ex) Object.assign(ex, clean, { active: true, updatedAt: now });
           else S.members.push({ id: uid('mb'), createdAt: now, active: true, ...p, updatedAt: now });
         });
@@ -1107,7 +1122,7 @@ function parseLineupCSV(text) {
     people.set(k, person); p.members.push(person);
   });
   if (!people.size) return { error: 'No names found under the name column.' };
-  const byName = Object.fromEntries(S.members.map(m => [lineupKey(m.name), m]));
+  const byName = rosterIndex(lineupKey);
   const list = [...people.values()].map(p => ({ ...p, existing: byName[p.key] || null }));
   return { fields, people: list, dupes,
     fresh: list.filter(p => !p.existing),
@@ -1353,25 +1368,32 @@ function parseBattleResults(text) {
 }
 // Roster lookup: exact name ignoring capitals first, then ignoring spaces and symbols when that's unambiguous.
 function battleMatcher() {
-  const exact = {}, loose = {};
-  S.members.forEach(m => {
-    const k = String(m.name).trim().toLowerCase(); if (!exact[k]) exact[k] = m;
-    const n = normName(m.name); if (n) loose[n] = loose[n] === undefined ? m : null;
-  });
-  return (name) => exact[String(name).trim().toLowerCase()] || loose[normName(name)] || null;
+  const exact = rosterIndex(lowerName), loose = {};
+  S.members.forEach(m => [m.name, ...(m.aliases || [])].forEach(x => { const n = normName(x); if (n) loose[n] = loose[n] === undefined || loose[n] === m ? m : null; }));
+  return (name) => exact[lowerName(name)] || loose[normName(name)] || null;
 }
 // What the import would do. The game exports one battle (one field) at a time, so each field's lineup is checked
 // against its own export. Playing in any pasted battle counts as joined, so someone listed in Main Field who
 // played Sub Field isn't absent. Fields with no export pasted are left alone.
 const fieldIds = (f) => new Set(f.parties.flatMap(p => p.slots).filter(Boolean));
-function planBattleAttendance(ev, playersByField, guild, keepMarks) {
+// The game calls Minstrel "Clown".
+const battleJob = (job) => normalizeJob(lowerName(job) === 'clown' ? 'MINSTREL' : job);
+// links: { lower-case export name: member id } chosen in "Who is this?"; adds: export names to add as new players.
+function planBattleAttendance(ev, playersByField, guild, keepMarks, links = {}, adds = new Set()) {
   const find = battleMatcher(); const mm = memberById(); const anywhere = placedIds(ev);
-  const played = new Map(); const unknown = new Set(); const fields = [];
+  const played = new Map(); const unknown = new Set(); const fields = []; const strangers = new Map(); const added = new Map();
   Object.entries(playersByField).forEach(([fid, players]) => {
     const f = ev.fields.find(x => x.id === fid); if (!f || !players) return;
     const ours = players.filter(p => !guild || p.guild === guild);
     const here = new Set();
-    ours.forEach(p => { const m = find(p.name); if (m) { here.add(m.id); played.set(m.id, m); } else unknown.add(p.name); });
+    ours.forEach(p => {
+      const key = lowerName(p.name); const named = find(p.name);
+      if (!named && !strangers.has(key)) strangers.set(key, { key, name: p.name, job: battleJob(p.job) });
+      const m = named || mm[links[key]];
+      if (m) { here.add(m.id); played.set(m.id, m); }
+      else if (adds.has(key)) added.set(key, strangers.get(key));
+      else unknown.add(p.name);
+    });
     fields.push({ f, ours: ours.length, here });
   });
   const changes = {};
@@ -1390,7 +1412,7 @@ function planBattleAttendance(ev, playersByField, guild, keepMarks) {
   const pastedLineups = new Set(fields.flatMap(({ f }) => [...fieldIds(f)]));
   const otherListed = [...played.values()].filter(m => anywhere.has(m.id) && !pastedLineups.has(m.id));
   otherListed.forEach(m => set(m, 'present'));
-  return { perField, instead, otherListed, unknown: [...unknown], changes,
+  return { perField, instead, otherListed, unknown: [...unknown], changes, strangers: [...strangers.values()], added: [...added.values()],
     joined: played.size, didnt: perField.reduce((a, x) => a + x.absent.length, 0) };
 }
 function battleImportDialog(ev) {
@@ -1405,25 +1427,73 @@ function battleImportDialog(ev) {
       <label class="field">Your guild in these exports<select id="brGuild"></select></label>
       <label class="check"><input type="checkbox" id="brKeep" checked> Keep marks already set for this event (like Late)</label>
     </div>
+    <div id="brWho" style="display:none;gap:6px"></div>
     <div id="brPrev" class="muted" style="font-size:13px"></div>
     <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="brGo" disabled>Apply</button></div>`,
   { wide: true, onMount: (el, close) => {
-    let byField = {}, plan = null;
+    let byField = {}, plan = null, renameLinked = true;
+    const links = {}; const adds = new Set(); // choices in "Who is this?"
     const names = (list) => esc(list.slice(0, 15).map(m => m.name || m).join(', ')) + (list.length > 15 ? ` and ${list.length - 15} more` : '');
     const preview = () => {
       plan = null; $('#brGo', el).disabled = true;
       if (!Object.keys(byField).length) { $('#brPrev', el).textContent = ''; return; }
-      plan = planBattleAttendance(ev, byField, $('#brGuild', el).value, $('#brKeep', el).checked);
-      const n = Object.keys(plan.changes).length;
+      plan = planBattleAttendance(ev, byField, $('#brGuild', el).value, $('#brKeep', el).checked, links, adds);
+      const n = Object.keys(plan.changes).length; const mm = memberById();
+      const linked = plan.strangers.filter(x => mm[links[x.key]]);
       $('#brPrev', el).innerHTML = plan.perField.map(x => `<div style="margin-top:6px"><b style="color:var(--ink)">${esc(x.name)}</b> · ${x.ours} of your players in its export
           <div><b style="color:var(--ok)">Present</b>: ${x.present.length}</div>
           ${x.moved.length ? `<div><b style="color:var(--ok)">Played the other field</b> (marked present): ${x.moved.length} — ${names(x.moved)}</div>` : ''}
           <div><b style="color:var(--danger)">Absent</b>, in the lineup but didn't play: ${x.absent.length}${x.absent.length ? ` — ${names(x.absent)}` : ''}</div></div>`).join('')
         + (plan.otherListed.length ? `<div style="margin-top:6px"><b style="color:var(--ok)">Played, listed in a field you didn't import</b> (marked present): ${plan.otherListed.length} — ${names(plan.otherListed)}</div>` : '')
         + (plan.instead.length ? `<div style="margin-top:6px"><b style="color:var(--ok)">Joined instead</b>, played but not in any lineup (marked present): ${plan.instead.length} — ${names(plan.instead)}</div>` : '')
-        + (plan.unknown.length ? `<div style="margin-top:6px;color:var(--warn)">Not in your roster, so they can't be marked: ${names(plan.unknown)}</div>` : '')
-        + `<div style="margin-top:8px;color:var(--ink)">${n ? `Apply changes ${n} attendance mark${n === 1 ? '' : 's'}.` : 'Nothing to change: attendance already matches.'}</div>`;
-      $('#brGo', el).disabled = !n;
+        + (linked.length ? `<div style="margin-top:6px"><b style="color:var(--ok)">Linked by you</b> (marked present): ${esc(linked.map(x => `${x.name} → ${mm[links[x.key]].name}`).join(', '))}</div>` : '')
+        + (plan.added.length ? `<div style="margin-top:6px"><b style="color:var(--ok)">New players</b> (added to the roster, marked present): ${names(plan.added)}</div>` : '')
+        + (plan.unknown.length ? `<div style="margin-top:6px;color:var(--warn)">Not linked, so they can't be marked: ${names(plan.unknown)}</div>` : '')
+        + `<div style="margin-top:8px;color:var(--ink)">${n ? `Apply changes ${n} attendance mark${n === 1 ? '' : 's'}.` : 'No attendance marks change.'}</div>`;
+      $('#brGo', el).disabled = !n && !linked.length && !plan.added.length;
+    };
+    // Who is this? One row per player who isn't in the roster. Nothing is preselected: it stays Not linked until you choose.
+    const renderWho = () => {
+      const box = $('#brWho', el);
+      const base = Object.keys(byField).length ? planBattleAttendance(ev, byField, $('#brGuild', el).value, true) : null;
+      if (!base || !base.strangers.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+      const keys = new Set(base.strangers.map(x => x.key));
+      Object.keys(links).forEach(k => { if (!keys.has(k)) delete links[k]; });
+      [...adds].forEach(k => { if (!keys.has(k)) adds.delete(k); });
+      const mm = memberById();
+      const absent = new Set(base.perField.flatMap(x => x.absent.map(m => m.id)));
+      // Everyone who played under their own name is out; same-job people who'd be absent are only listed first.
+      const playedIds = new Set(base.perField.flatMap(x => [...x.present, ...x.moved].map(m => m.id)).concat([...base.instead, ...base.otherListed].map(m => m.id)));
+      const itemsFor = (x) => S.members.filter(m => !playedIds.has(m.id)).map(m => {
+        const possible = absent.has(m.id) && m.job === x.job;
+        return { id: m.id, rank: possible ? 0 : absent.has(m.id) ? 1 : m.job === x.job ? 2 : 3, label: m.name, keys: [m.name, m.job || '', ...(m.aliases || [])],
+          sub: [pretty(m.job), possible ? 'possible match' : absent.has(m.id) ? 'absent' : ''].filter(Boolean).join(' · ') };
+      }).sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
+      box.style.display = 'grid';
+      box.innerHTML = `<b style="font-size:13px">Who is this? (${base.strangers.length} not in your roster)</b>
+        <div class="muted" style="font-size:12px">Only if you know: a renamed player or a new one. Leave the rest Not linked. A suggestion is only a guess, and a sub can look just like a rename.</div>
+        ${base.strangers.map((x, i) => `<div class="who-row" data-who="${i}"><div><b>${esc(x.name)}</b> <span class="muted" style="font-size:12px">${esc(pretty(x.job))}</span></div>
+          <div><input type="text" data-whoin placeholder="Not linked: search the roster" autocomplete="off"></div>
+          <label class="check"><input type="checkbox" data-whonew> New player</label></div>`).join('')}
+        <label class="check"><input type="checkbox" id="brRename" ${renameLinked ? 'checked' : ''}> Rename linked players in the roster to their export name (the old name is remembered either way)</label>`;
+      $('#brRename', box).onchange = (e) => { renameLinked = e.target.checked; };
+      $$('.who-row', box).forEach(row => {
+        const x = base.strangers[+row.dataset.who]; const input = $('[data-whoin]', row); const isNew = $('[data-whonew]', row);
+        if (mm[links[x.key]]) input.value = mm[links[x.key]].name;
+        isNew.checked = adds.has(x.key); input.disabled = isNew.checked;
+        nameCombo(input, itemsFor(x), (it) => {
+          const other = Object.entries(links).find(([k, id]) => id === it.id && k !== x.key);
+          if (other) { toast(`${it.label} is already linked to another name here`, 3500); input.value = ''; delete links[x.key]; }
+          else links[x.key] = it.id;
+          preview();
+        });
+        input.addEventListener('input', () => { if (links[x.key]) { delete links[x.key]; preview(); } });
+        input.addEventListener('blur', () => { if (!links[x.key]) input.value = ''; });
+        isNew.onchange = () => {
+          if (isNew.checked) { adds.add(x.key); delete links[x.key]; input.value = ''; } else adds.delete(x.key);
+          input.disabled = isNew.checked; preview();
+        };
+      });
     };
     const load = () => {
       byField = {}; let all = []; let bad = false;
@@ -1436,7 +1506,7 @@ function battleImportDialog(ev) {
         byField[f.id] = r.players; all = all.concat(r.players);
         note.textContent = `${r.players.length} players read.`;
       });
-      if (!all.length) { $('#brOpts', el).style.display = 'none'; preview(); if (bad) $('#brGo', el).disabled = true; return; }
+      if (!all.length) { $('#brOpts', el).style.display = 'none'; renderWho(); preview(); if (bad) $('#brGo', el).disabled = true; return; }
       // Pick the guild whose players match the roster best (the game may write the guild name in special letters).
       const find = battleMatcher(); const guilds = {}; const keep = $('#brGuild', el).value;
       all.forEach(p => { const g = guilds[p.guild] = guilds[p.guild] || { n: 0, hits: 0 }; g.n++; if (find(p.name)) g.hits++; });
@@ -1444,14 +1514,31 @@ function battleImportDialog(ev) {
       $('#brGuild', el).innerHTML = order.map(([g, x]) => `<option value="${esc(g)}">${esc(g || '(no guild column)')} · ${x.n} players, ${x.hits} in your roster</option>`).join('');
       if (keep && guilds[keep]) $('#brGuild', el).value = keep;
       $('#brOpts', el).style.display = 'grid';
-      preview();
+      renderWho(); preview();
     };
     $$('[data-brtext]', el).forEach(t => (t.oninput = debounce(load, 200)));
     $$('[data-brfile]', el).forEach(inp => (inp.onchange = async (e) => { const file = e.target.files[0]; if (file) { $(`[data-brtext="${inp.dataset.brfile}"]`, el).value = await file.text(); load(); } }));
-    $('#brGuild', el).onchange = preview; $('#brKeep', el).onchange = preview;
+    $('#brGuild', el).onchange = () => { renderWho(); preview(); }; $('#brKeep', el).onchange = preview;
     $('#brGo', el).onclick = () => {
       if (!plan) return;
       Object.entries(plan.changes).forEach(([id, mark]) => (ev.attendance[id] = mark));
+      // Remember linked names, so the next export matches by itself.
+      const now = new Date().toISOString(); const mm = memberById();
+      plan.strangers.forEach(x => {
+        const m = mm[links[x.key]]; if (!m) return;
+        const oldName = m.name; const names = [...(m.aliases || []), renameLinked ? oldName : x.name];
+        if (renameLinked) {
+          m.name = x.name;
+          S.auction.entries.forEach(e => { if (e.memberId === m.id || (!e.memberId && normName(e.name) === normName(oldName))) e.name = x.name; });
+        }
+        m.aliases = [...new Map(names.filter(a => lowerName(a) !== lowerName(m.name)).map(a => [lowerName(a), a])).values()];
+        m.updatedAt = now;
+      });
+      plan.added.forEach(x => {
+        if (!S.roles[x.job]) S.roles[x.job] = 'dps';
+        const m = { id: uid('mb'), name: x.name, job: x.job, level: null, gs: 0, active: true, createdAt: now, updatedAt: now };
+        S.members.push(m); ev.attendance[m.id] = 'present';
+      });
       ev.updatedAt = new Date().toISOString();
       close(); commit();
       toast(`Attendance updated: ${plan.joined} joined, ${plan.didnt} didn't${plan.instead.length ? ` (${plan.instead.length} joined instead)` : ''}`, 4500);
@@ -1724,7 +1811,7 @@ const normName = (s) => { const a = String(s || '').toLowerCase().replace(/[^a-z
 // The roster member a reservation belongs to, if any. Names not in the roster keep their Discord-style "@".
 const aucMember = (e, mm = memberById(), idx = rosterLookup()) => (e.memberId && mm[e.memberId]) || idx[normName(e.name)] || null;
 const atName = (e, mm, idx) => (aucMember(e, mm, idx) ? '' : '@') + e.name;
-function rosterLookup() { const idx = {}; S.members.forEach(m => { const k = normName(m.name); if (k && !idx[k]) idx[k] = m; }); return idx; }
+function rosterLookup() { return rosterIndex(normName); }
 // Searchable name picker under a text input: type to filter, ↑↓ + Enter or click to pick.
 // items: [{ label, sub, keys, ...anything }]; onPick gets the chosen item.
 function nameCombo(input, items, onPick) {

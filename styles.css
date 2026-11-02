@@ -247,3 +247,6 @@ th.sortable:hover { color: var(--ink); }
 .party-top .plabel { cursor: text; border-radius: 4px; padding: 0 2px; }
 .party-top .plabel:hover { background: var(--panel-2); outline: 1px dashed var(--line-2); }
 .plabel-input { font: inherit; font-weight: 600; width: 9em; padding: 1px 4px; border: 1px solid var(--brass); border-radius: 4px; background: var(--panel-2); color: var(--ink); }
+.who-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(170px, 1.4fr) auto; gap: 8px; align-items: start; padding: 5px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.who-row input[type=text] { width: 100%; }
+@media (max-width: 600px) { .who-row { grid-template-columns: 1fr; } }
